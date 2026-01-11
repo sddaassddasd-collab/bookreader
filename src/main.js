@@ -274,7 +274,7 @@ function buildRemoteUrl(id){
 }
 async function pullRemoteState(id = remoteId){
   const targetId = (id || remoteId || '').trim();
-  if(!targetId) throw new Error('請先輸入同步 ID');
+  if(!targetId) throw new Error('請填同步 ID（不用填同步網址或 Token）');
 
   const resp = await fetch(buildRemoteUrl(targetId), { method:'GET' });
   if(!resp.ok){
@@ -313,7 +313,7 @@ async function pullRemoteState(id = remoteId){
 }
 async function pushRemoteState(id = remoteId){
   const targetId = (id || remoteId || '').trim();
-  if(!targetId) throw new Error('請先輸入同步 ID');
+  if(!targetId) throw new Error('請填同步 ID（不用填同步網址或 Token）');
 
   const payload = { slots, activeSlotId, words: loadWords(), lang: getLang(), updatedAt: nowISO() };
   const resp = await fetch(buildRemoteUrl(targetId), {
@@ -374,7 +374,7 @@ function bindRemoteUI(){
   syncBtn?.addEventListener('click', async ()=>{
     persistInputs();
     if(!hasRemoteConfig()){
-      alert('請填入同步 ID');
+      alert('請填同步 ID（新版不用填同步網址或 Token）');
       return;
     }
     try{
