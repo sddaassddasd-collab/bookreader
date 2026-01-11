@@ -28,7 +28,7 @@ app.use((req, res, next) => {
 });
 
 // Allow larger JSON/text bodies so sync payload不會 413；Cloud Run 硬上限 32MB
-app.use(express.text({ type: "*/*", limit: "8mb" }));
+app.use(express.text({ type: "*/*", limit: "8MB" }));
 
 // Preflight
 app.options("/api/state", (req, res) => res.status(200).send("ok"));
