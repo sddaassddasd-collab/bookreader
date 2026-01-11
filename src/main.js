@@ -1202,7 +1202,7 @@ function renderVirtualWindow(start, end){
       node = buildSegmentElement(compiledSegments[i]);
     }
     frag.appendChild(node);
-  }
+  };
   viewport.appendChild(frag);
   virtualDom.start = s;
   virtualDom.end = e;
