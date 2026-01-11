@@ -371,6 +371,18 @@ async function pullRemoteState(id = remoteId){
     const langEl = document.getElementById('langSelect');
     if(langEl) langEl.value = data.lang;
   }
+  if(typeof data.level === 'string'){
+    const levelEl = document.getElementById('levelSelect');
+    if(levelEl) levelEl.value = data.level;
+  }
+  if(typeof data.genre === 'string'){
+    const genreEl = document.getElementById('genreSelect');
+    if(genreEl) genreEl.value = data.genre;
+  }
+  if(typeof data.length !== 'undefined' && data.length !== null){
+    const lenEl = document.getElementById('lengthInput');
+    if(lenEl) lenEl.value = data.length;
+  }
   if(data.llm && typeof data.llm === 'object'){
     applyRemoteLLMConfig(data.llm);
   }
@@ -404,12 +416,16 @@ async function pushRemoteState(id = remoteId){
   const targetId = (id || remoteId || '').trim();
   if(!targetId) throw new Error('請填同步 ID（不用填同步網址或 Token）');
 
+  const llmPref = captureLLMAndLangPrefs();
   const payload = {
     slots,
     activeSlotId,
     words: loadWords(),
-    lang: getLang(),
-    llm: captureLLMAndLangPrefs(),
+    lang: llmPref.lang,
+    level: llmPref.level,
+    genre: llmPref.genre,
+    length: llmPref.length,
+    llm: llmPref,
     updatedAt: nowISO()
   };
   const resp = await fetch(buildRemoteUrl(targetId), {
