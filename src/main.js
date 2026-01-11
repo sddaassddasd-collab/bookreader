@@ -19,7 +19,7 @@ const REMOTE_ENDPOINT = `${API_BASE}/api/state`;
 const REMOTE_ID_KEY = 'local-text-reader.remote.id';
 const LEGACY_REMOTE_EXEC_KEY = 'local-text-reader.remote.exec';
 const LEGACY_REMOTE_TOKEN_KEY = 'local-text-reader.remote.token';
-const AUTO_REMOTE_SYNC_ENABLED = false; // 僅在按「立即同步」時才上傳
+const AUTO_REMOTE_SYNC_ENABLED = false; // 僅手動按「儲存」時才上傳
 const REMOTE_DEBOUNCE_MS = 1000;
 
 /* ========= 字典開關（存本機 localStorage） ========= */
@@ -418,6 +418,7 @@ function bindRemoteUI(){
   const saveBtn = document.getElementById('saveRemote');
   const syncBtn = document.getElementById('syncNow');
   const clearBtn = document.getElementById('clearRemote');
+  const pushBtn = document.getElementById('pushRemote');
 
   if(idInput) idInput.value = remoteId;
 
@@ -428,7 +429,7 @@ function bindRemoteUI(){
   saveBtn?.addEventListener('click', ()=>{
     persistInputs();
     setStatus(hasRemoteConfig()
-      ? `已儲存同步設定（ID：${remoteId}，僅在按「立即同步」時上傳）`
+      ? `已儲存同步設定（ID：${remoteId}，上傳請用閱讀區「儲存」）`
       : '已停用遠端同步（僅用本機）');
   });
 
@@ -440,12 +441,28 @@ function bindRemoteUI(){
     }
     try{
       await pullRemoteState(remoteId);
-      await pushRemoteState(remoteId);
-      setStatus(`雲端同步完成（ID：${remoteId}）`);
+      setStatus(`已從雲端讀取最新狀態（ID：${remoteId}）`);
     }catch(err){
       console.error(err);
-      setStatus('遠端同步失敗：' + err.message);
-      alert('同步失敗：' + err.message);
+      setStatus('讀取雲端失敗：' + err.message);
+      alert('讀取失敗：' + err.message);
+    }
+  });
+
+  pushBtn?.addEventListener('click', async ()=>{
+    persistInputs();
+    if(!hasRemoteConfig()){
+      alert('請填同步 ID（新版不用填同步網址或 Token）');
+      return;
+    }
+    try{
+      saveActiveSlot();
+      await pushRemoteState(remoteId);
+      setStatus(`已儲存當下進度並上傳（ID：${remoteId}）`);
+    }catch(err){
+      console.error(err);
+      setStatus('上傳失敗：' + err.message);
+      alert('上傳失敗：' + err.message);
     }
   });
 

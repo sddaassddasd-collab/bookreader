@@ -51,7 +51,7 @@
               <button id="syncNow" class="secondary">立即同步</button>
               <button id="clearRemote" class="ghost">停用遠端</button>
             </div>
-            <div class="help">預設僅儲存本機，按「立即同步」才會讀取並上傳雲端。GitHub Pages 版已內建 API_BASE=https://gas-proxy-678824560367.asia-east1.run.app，只需填同步 ID。</div>
+            <div class="help">預設僅儲存本機，「立即同步」只讀取雲端；閱讀區的「儲存」按鈕會上傳當前進度。GitHub Pages 版已內建 API_BASE=https://gas-proxy-678824560367.asia-east1.run.app，只需填同步 ID。</div>
           </div>
 
           <label for="src" class="input-label">在下方貼上英文／德文／法文文章：</label>
@@ -80,6 +80,7 @@
               <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
             </div>
             <div class="reader-head-actions">
+              <button id="pushRemote" class="accent">儲存</button>
               <button id="openImmersive" class="secondary">沉浸模式</button>
               <button id="resetProgressBtn" class="secondary">重置進度</button>
             </div>
