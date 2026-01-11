@@ -1,7 +1,8 @@
 import express from "express";
 
 const app = express();
-app.use(express.text({ type: "*/*" }));
+// Allow larger JSON/text bodies so sync payload不會 413；Cloud Run 硬上限 32MB
+app.use(express.text({ type: "*/*", limit: "2mb" }));
 
 // GAS Web App exec URL（不含 query）
 const GAS_BASE =
