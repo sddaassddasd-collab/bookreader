@@ -93,6 +93,20 @@ let wordsSaveTimer = null;
 let wordsSavePayload = null;
 let wordUiRenderScheduled = false;
 
+const INITIAL_SEGMENTS = 32;
+const MAX_RENDERED_SEGMENTS = 140;
+const VIRTUAL_BUFFER = 24;
+const VIRTUAL_THRESHOLD = 40;
+let compiledSegments = [];
+let useVirtualScroll = false;
+let virtualDom = { viewport: null, padBefore: null, padAfter: null, start: 0, end: 0, avgHeight: 32 };
+const wordNodeMap = new Map(); // key -> Set<HTMLElement>
+const deductedWords = new Set();
+const segmentHeights = [];
+let hfState = { top15: new Set(), top50: new Set() };
+let hfRecalcTimer = null;
+const HF_RECALC_MS = 650;
+
 function captureLLMAndLangPrefs(){
   return {
     provider: getSelectedProvider(),
@@ -120,6 +134,7 @@ async function init() {
   bindWordCardQA();
   bindExtraQuestionUI();
   bindSelectionWatcher();
+  bindReaderDelegates();
 
   let syncedFromRemote = false;
   if(hasRemoteConfig()){
@@ -170,6 +185,7 @@ function bindSlotUI() {
 }
 
 function onReaderScroll() {
+  handleVirtualScroll();
   const ratio = getScrollProgress(reader);
   updateProgressUI(ratio);
   setSlotProgressInMap(activeSlotId, ratio);
@@ -333,6 +349,72 @@ function resetAllProgressInMap(){
   scheduleProgressSave();
 }
 
+function clearWordNodeMap(){
+  wordNodeMap.clear();
+}
+function applyHFClassToNode(node, key){
+  if(!node) return;
+  node.classList.remove('hf15','hf50');
+  if(node.classList.contains('deducted')) return;
+  if(hfState.top15.has(key)) node.classList.add('hf15');
+  else if(hfState.top50.has(key)) node.classList.add('hf50');
+}
+function registerWordNode(node){
+  if(!node || !node.dataset) return;
+  const key = toLowerAlpha(node.dataset.w);
+  if(!key) return;
+  let bucket = wordNodeMap.get(key);
+  if(!bucket){ bucket = new Set(); wordNodeMap.set(key, bucket); }
+  bucket.add(node);
+  if(deductedWords.has(key)) node.classList.add('deducted');
+  applyHFClassToNode(node, key);
+}
+function unregisterWordNode(node){
+  if(!node || !node.dataset) return;
+  const key = toLowerAlpha(node.dataset.w);
+  const bucket = wordNodeMap.get(key);
+  if(!bucket) return;
+  bucket.delete(node);
+  if(bucket.size === 0) wordNodeMap.delete(key);
+}
+function registerSegmentWords(segEl){
+  segEl?.querySelectorAll('.word').forEach(registerWordNode);
+}
+function unregisterSegmentWords(segEl){
+  segEl?.querySelectorAll('.word').forEach(unregisterWordNode);
+}
+function setsEqual(a, b){
+  if(a.size !== b.size) return false;
+  for(const v of a){ if(!b.has(v)) return false; }
+  return true;
+}
+function updateHFClassesForWord(word){
+  const nodes = wordNodeMap.get(word);
+  if(!nodes) return;
+  nodes.forEach(node => applyHFClassToNode(node, word));
+}
+function recomputeHFClasses(force=false){
+  const nextTop15 = new Set(getTopNWordKeys(15));
+  const nextTop50 = new Set(getTopNWordKeys(50));
+  const changed = new Set();
+  if(force || !setsEqual(hfState.top15, nextTop15) || !setsEqual(hfState.top50, nextTop50)){
+    nextTop15.forEach(w => { if(!hfState.top15.has(w)) changed.add(w); });
+    hfState.top15.forEach(w => { if(!nextTop15.has(w)) changed.add(w); });
+    nextTop50.forEach(w => { if(!hfState.top50.has(w)) changed.add(w); });
+    hfState.top50.forEach(w => { if(!nextTop50.has(w)) changed.add(w); });
+  }
+  hfState = { top15: nextTop15, top50: nextTop50 };
+  changed.forEach(updateHFClassesForWord);
+}
+function scheduleHFRecalc(force=false){
+  if(force){ recomputeHFClasses(true); return; }
+  clearTimeout(hfRecalcTimer);
+  hfRecalcTimer = setTimeout(()=>{
+    hfRecalcTimer = null;
+    recomputeHFClasses(false);
+  }, HF_RECALC_MS);
+}
+
 function loadRemoteId(){ try{ return (localStorage.getItem(REMOTE_ID_KEY) || '').trim(); }catch{ return ''; } }
 function saveRemoteId(id){
   remoteId = (id || '').trim();
@@ -363,7 +445,7 @@ async function pullRemoteState(id = remoteId){
     renderSlotBoard();
     setActiveSlot(activeSlotId);
     renderWordList();
-    applyHFClassesToReader();
+    applyHFClassesToReader({ force:true });
     return {};
   }
 
@@ -409,7 +491,7 @@ async function pullRemoteState(id = remoteId){
   renderSlotBoard();
   setActiveSlot(activeSlotId);
   renderWordList();
-  applyHFClassesToReader();
+  applyHFClassesToReader({ force:true });
   return data;
 }
 async function pushRemoteState(id = remoteId){
@@ -603,7 +685,7 @@ function updateUILang(){
   }
   getLangLabel();
   renderWordList();
-  applyHFClassesToReader();
+  applyHFClassesToReader({ force:true });
 }
 
 function getSelectedProvider(){
@@ -698,19 +780,20 @@ function exitImmersive(){
 
 /* ========= TTS ========= */
 function resetAllSegHighlights(){
-  $$('.reader .seg.playing').forEach(el=> el.classList.remove('playing'));
+  const scope = virtualDom.viewport || reader;
+  if(scope) scope.querySelectorAll('.seg.playing').forEach(el=> el.classList.remove('playing'));
   currentSegIdx = null;
 }
 function highlightSegmentByIndex(idx){
   resetAllSegHighlights();
-  const seg = document.querySelector(`.reader .seg[data-i="${idx}"]`);
+  const seg = ensureSegmentInDom(idx);
   if (seg){
     seg.classList.add('playing');
     currentSegIdx = idx;
   }
 }
 function resetAllPlayButtons(){
-  $$('.playseg').forEach(btn=>{
+  (reader?.querySelectorAll('.playseg') || []).forEach(btn=>{
     btn.classList.remove('playing');
     btn.textContent = '▶';
     btn.title = (btn.title || '').replace('（播放中）','').trim();
@@ -748,8 +831,13 @@ async function fetchTTSUrl({ text, voice }){
   return URL.createObjectURL(blob);
 }
 async function buildTTSForCurrent() {
-  const segEls = $$('.reader .seg');
-  if (!segEls.length) {
+  const sourceSegments = compiledSegments.length
+    ? compiledSegments
+    : Array.from(document.querySelectorAll('.reader .seg')).map(el => ({
+        i: parseInt(el.dataset.i || '0', 10) || 0,
+        text: el.textContent || ''
+      }));
+  if (!sourceSegments.length) {
     alert('沒有可朗讀的文字');
     return;
   }
@@ -767,23 +855,15 @@ async function buildTTSForCurrent() {
     return maleThis ? VOICE_MALE : VOICE_FEMALE;
   };
 
-  for (const segEl of segEls) {
-    const raw = segEl.textContent.trim();
+  for (const segEl of sourceSegments) {
+    const raw = (segEl.text || '').trim();
     const cleaned = sanitizeSegmentForTTS(raw, genre);
     if (!cleaned) continue;
-    const i = parseInt(segEl.dataset.i, 10);
+    const i = segEl.i ?? parseInt(segEl.dataset?.i || '0', 10);
     const voice = shouldAlternate ? getVoiceByTurn(spokenIndex) : uniformVoice;
     try {
       const url = await fetchTTSUrl({ text: cleaned, voice });
       segAudios.set(i, { url, voice });
-      if (!segEl.querySelector('.playseg')) {
-        const btn = document.createElement('button');
-        btn.className = 'playseg';
-        btn.textContent = '▶';
-        btn.title = `播放這段（${voice === VOICE_MALE ? '男' : '女'}聲）`;
-        btn.dataset.i = String(i);
-        segEl.prepend(btn);
-      }
       if (shouldAlternate) spokenIndex++;
     } catch (err) {
       console.error('TTS 失敗 at line', i, err);
@@ -791,6 +871,7 @@ async function buildTTSForCurrent() {
   }
   ttsGenerated = true;
   resetAllSegHighlights();
+  syncPlayButtonsForRenderedSegments();
   ttsDrawer.classList.add('show');
   alert(shouldAlternate
     ? '語音已生成（對話：男女交替）。'
@@ -951,7 +1032,7 @@ function scheduleWordUiRefresh(){
   const runner = ()=>{
     wordUiRenderScheduled = false;
     renderWordList();
-    applyHFClassesToReader();
+    scheduleHFRecalc();
   };
   if(typeof requestIdleCallback === 'function'){
     requestIdleCallback(runner, { timeout: 120 });
@@ -1022,17 +1103,174 @@ function getTopNWordKeys(n){
     .slice(0,n)
     .map(x=>x.word);
 }
-function applyHFClassesToReader(){
-  const top15 = new Set(getTopNWordKeys(15));
-  const top50 = new Set(getTopNWordKeys(50));
-  $$('.reader .word').forEach(el=>{
-    const w = toLowerAlpha(el.dataset.w);
-    if(!el.classList.contains('deducted')){
-      el.classList.remove('hf15','hf50');
-      if(top15.has(w)) el.classList.add('hf15');
-      else if(top50.has(w)) el.classList.add('hf50');
+function applyHFClassesToReader(opts = {}){
+  const { force=false } = opts;
+  recomputeHFClasses(force);
+}
+
+/* ========= 閱讀區虛擬化 ========= */
+function ensureReaderShell(){
+  if(!reader) return;
+  clearWordNodeMap();
+  reader.innerHTML = '';
+  const padBefore = document.createElement('div');
+  padBefore.className = 'virtual-pad before';
+  const viewport = document.createElement('div');
+  viewport.className = 'virtual-viewport';
+  const padAfter = document.createElement('div');
+  padAfter.className = 'virtual-pad after';
+  reader.append(padBefore, viewport, padAfter);
+  virtualDom = { viewport, padBefore, padAfter, start: 0, end: 0, avgHeight: virtualDom.avgHeight || 32 };
+}
+function teardownReader(){
+  if(reader) reader.innerHTML = '';
+  clearWordNodeMap();
+  compiledSegments = [];
+  useVirtualScroll = false;
+  virtualDom = { viewport: null, padBefore: null, padAfter: null, start: 0, end: 0, avgHeight: virtualDom.avgHeight || 32 };
+}
+function applyAudioButtonIfAny(segEl, idx){
+  if(!segEl) return;
+  const item = segAudios.get(idx);
+  if(!item) return;
+  if(segEl.querySelector('.playseg')) return;
+  const btn = document.createElement('button');
+  btn.className = 'playseg';
+  btn.textContent = '▶';
+  btn.title = `播放這段（${item.voice === VOICE_FEMALE ? '女' : '男'}聲）`;
+  btn.dataset.i = String(idx);
+  segEl.prepend(btn);
+}
+function buildSegmentElement(seg){
+  const segEl = document.createElement('div');
+  segEl.className = 'seg';
+  segEl.dataset.i = seg.i;
+  segEl.innerHTML = seg.html;
+  segEl.style.contentVisibility = 'auto';
+  segEl.style.containIntrinsicSize = '1em 120px';
+  registerSegmentWords(segEl);
+  applyAudioButtonIfAny(segEl, seg.i);
+  return segEl;
+}
+function updateVirtualPadding(start, end){
+  if(!virtualDom.padBefore || !virtualDom.padAfter) return;
+  const beforeH = start * virtualDom.avgHeight;
+  const afterH = Math.max(0, (compiledSegments.length - end) * virtualDom.avgHeight);
+  virtualDom.padBefore.style.height = `${beforeH}px`;
+  virtualDom.padAfter.style.height = `${afterH}px`;
+}
+function refreshAvgHeight(){
+  if(!virtualDom.viewport) return;
+  const nodes = Array.from(virtualDom.viewport.children);
+  if(!nodes.length) return;
+  let sum = 0, count = 0;
+  nodes.forEach(node=>{
+    const h = node.offsetHeight;
+    if(!h) return;
+    const idx = Number(node.dataset.i);
+    segmentHeights[idx] = h;
+    sum += h; count += 1;
+  });
+  if(count){
+    const next = sum / count;
+    virtualDom.avgHeight = (virtualDom.avgHeight * 0.5) + (next * 0.5);
+    updateVirtualPadding(virtualDom.start, virtualDom.end);
+  }
+}
+function renderVirtualWindow(start, end){
+  if(!reader) return;
+  if(!virtualDom.viewport) ensureReaderShell();
+  const total = compiledSegments.length;
+  const s = Math.max(0, Math.min(start, total));
+  const e = Math.max(s, Math.min(end, total));
+  const viewport = virtualDom.viewport;
+  const existing = new Map();
+  Array.from(viewport.children).forEach(node=>{
+    existing.set(Number(node.dataset.i), node);
+  });
+  existing.forEach((node, idx)=>{
+    if(idx < s || idx >= e){
+      unregisterSegmentWords(node);
+      node.remove();
+      existing.delete(idx);
     }
   });
+  const frag = document.createDocumentFragment();
+  for(let i=s; i<e; i++){
+    let node = existing.get(i);
+    if(!node){
+      node = buildSegmentElement(compiledSegments[i]);
+    }
+    frag.appendChild(node);
+  });
+  viewport.appendChild(frag);
+  virtualDom.start = s;
+  virtualDom.end = e;
+  updateVirtualPadding(s, e);
+  requestAnimationFrame(refreshAvgHeight);
+}
+function computeWindowForIndex(idx){
+  const total = compiledSegments.length;
+  if(total === 0) return { start: 0, end: 0 };
+  let start = Math.max(0, idx - Math.floor(MAX_RENDERED_SEGMENTS / 2));
+  let end = Math.min(total, start + MAX_RENDERED_SEGMENTS);
+  if(end - start < MAX_RENDERED_SEGMENTS && start > 0){
+    start = Math.max(0, end - MAX_RENDERED_SEGMENTS);
+  }
+  return { start, end };
+}
+function renderAroundIndex(idx){
+  if(!useVirtualScroll) return;
+  const range = computeWindowForIndex(idx);
+  renderVirtualWindow(range.start, range.end);
+}
+function ensureSegmentInDom(idx){
+  if(!reader || compiledSegments.length === 0) return null;
+  if(!useVirtualScroll){
+    return reader.querySelector(`.seg[data-i="${idx}"]`);
+  }
+  if(idx < virtualDom.start || idx >= virtualDom.end){
+    renderAroundIndex(idx);
+  }
+  return virtualDom.viewport?.querySelector(`.seg[data-i="${idx}"]`) || null;
+}
+function handleVirtualScroll(){
+  if(!useVirtualScroll || !compiledSegments.length || !reader) return;
+  const approxIdx = Math.floor(reader.scrollTop / Math.max(virtualDom.avgHeight, 1));
+  const start = Math.max(0, approxIdx - VIRTUAL_BUFFER);
+  const end = Math.min(compiledSegments.length, start + MAX_RENDERED_SEGMENTS);
+  if(start === virtualDom.start && end === virtualDom.end) return;
+  renderVirtualWindow(start, end);
+}
+function scrollToSegmentIndex(idx, behavior='smooth'){
+  if(!reader || !compiledSegments.length) return;
+  if(useVirtualScroll){
+    const approxTop = Math.max(0, idx * virtualDom.avgHeight - virtualDom.avgHeight);
+    reader.scrollTo({ top: approxTop, behavior });
+    renderAroundIndex(idx);
+  }else{
+    const seg = reader.querySelector(`.seg[data-i="${idx}"]`);
+    if(seg) seg.scrollIntoView({ behavior, block:'center' });
+  }
+}
+function syncPlayButtonsForRenderedSegments(){
+  if(!virtualDom.viewport) return;
+  Array.from(virtualDom.viewport.querySelectorAll('.seg')).forEach(seg=>{
+    const idx = Number(seg.dataset.i);
+    applyAudioButtonIfAny(seg, idx);
+  });
+}
+function getWordNodes(word){
+  const set = wordNodeMap.get(word);
+  return set ? Array.from(set) : [];
+}
+function findFirstSegmentIndexForWord(word){
+  const key = toLowerAlpha(word);
+  const re = buildVariantPattern(key) || new RegExp('\\b' + escapeRegExp(key) + '\\b', 'i');
+  for(const seg of compiledSegments){
+    if(re.test(seg.text)) return seg.i;
+  }
+  return -1;
 }
 
 /* ========= 文章處理 ========= */
@@ -1064,32 +1302,38 @@ function compile(){
   ttsGenerated = false;
   segAudios.clear();
   ttsDrawer.classList.remove('show');
+  deductedWords.clear();
+  clearWordNodeMap();
+  segmentHeights.length = 0;
+  virtualDom.avgHeight = 32;
 
   const raw = $('#src').value;
   if(!raw.trim()){
+    compiledSegments = [];
+    useVirtualScroll = false;
+    teardownReader();
     reader.innerHTML = '<div class="empty">請先貼上文章再產生。</div>';
     updateProgressUI(0);
     return;
   }
   const lines = raw.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
   if(lines.length === 0){
+    compiledSegments = [];
+    useVirtualScroll = false;
+    teardownReader();
     reader.innerHTML = '<div class="empty">內容皆為空白。</div>';
     updateProgressUI(0);
     return;
   }
-  const html = lines.map((line, i)=>{
+  compiledSegments = lines.map((line, i)=>{
     const inner = tokenizeParagraphToHTML(line);
-    return `<div class="seg" data-i="${i}">${inner}</div>`;
-  }).join('\n');
-  reader.innerHTML = html;
-  $$('.reader .word').forEach(el=>{
-    el.addEventListener('pointerdown', onWordPointerDown);
-    el.addEventListener('click', onWordClickHandler);
-    el.addEventListener('dblclick', onWordDblClickHandler);
+    return { i, text: line, html: inner };
   });
-  reader.removeEventListener('click', segPlayHandler);
-  reader.addEventListener('click', segPlayHandler);
-  applyHFClassesToReader();
+  useVirtualScroll = compiledSegments.length > VIRTUAL_THRESHOLD;
+  ensureReaderShell();
+  const initialCount = useVirtualScroll ? Math.min(INITIAL_SEGMENTS, compiledSegments.length) : compiledSegments.length;
+  renderVirtualWindow(0, initialCount);
+  applyHFClassesToReader({ force: true });
   updateProgressUI(getScrollProgress(reader));
 }
 
@@ -1276,34 +1520,55 @@ async function lookupDefinition(word){
 }
 
 /* ========= 點擊 / 雙擊 ========= */
-function onWordClickHandler(e){
-  const el = e.currentTarget;
+function findWordTarget(node){
+  if(!node) return null;
+  return node.closest('.word');
+}
+function onWordClickHandler(el){
+  if(!el) return;
   if (el._clickTimer) clearTimeout(el._clickTimer);
   el._clickTimer = setTimeout(()=>{ processSingleClick(el); el._clickTimer=null; }, 200);
 }
-function onWordDblClickHandler(e){
-  const el = e.currentTarget;
+function onWordDblClickHandler(el){
+  if(!el) return;
   if (el._clickTimer){ clearTimeout(el._clickTimer); el._clickTimer=null; }
   el.classList.remove('tapping');
   processDoubleClick(el);
 }
-function onWordPointerDown(e){
-  const el = e.currentTarget;
+function onWordPointerDown(el){
+  if(!el) return;
   el.classList.add('tapping');
   setTimeout(()=> el.classList.remove('tapping'), 320);
+}
+function handleReaderPointerDown(e){
+  const target = findWordTarget(e.target);
+  if(!target || target.closest('.playseg')) return;
+  onWordPointerDown(target);
+}
+function handleReaderClick(e){
+  const playBtn = e.target.closest('.playseg');
+  if(playBtn){
+    segPlayHandler(e);
+    return;
+  }
+  const target = findWordTarget(e.target);
+  if(!target) return;
+  onWordClickHandler(target);
+}
+function handleReaderDblClick(e){
+  const target = findWordTarget(e.target);
+  if(!target || target.closest('.playseg')) return;
+  onWordDblClickHandler(target);
 }
 async function processSingleClick(el){
   const display = el.dataset.w;
   const word = toLowerAlpha(display);
-  const anyDeducted = $$('.reader .word').some(node =>
-    toLowerAlpha(node.dataset.w) === word && node.classList.contains('deducted')
-  );
+  const nodes = getWordNodes(word);
+  const anyDeducted = deductedWords.has(word) || nodes.some(node => node.classList.contains('deducted'));
   if(anyDeducted){
-    $$('.reader .word').forEach(node=>{
-      if (toLowerAlpha(node.dataset.w) === word){
-        node.classList.remove('deducted');
-      }
-    });
+    deductedWords.delete(word);
+    nodes.forEach(node=> node.classList.remove('deducted'));
+    updateHFClassesForWord(word);
     scheduleWordUiRefresh();
     return;
   }
@@ -1372,12 +1637,12 @@ async function processSingleClick(el){
 function processDoubleClick(el){
   const display = el.dataset.w;
   const word = toLowerAlpha(display);
+  deductedWords.add(word);
   adjustWordCount(word, -2);
-  $$('.reader .word').forEach(node=>{
-    if (toLowerAlpha(node.dataset.w) === word){
-      node.classList.remove('hf15','hf50');
-      node.classList.add('deducted');
-    }
+  const nodes = getWordNodes(word);
+  nodes.forEach(node=>{
+    node.classList.remove('hf15','hf50');
+    node.classList.add('deducted');
   });
   el.animate([{transform:'scale(1.02)'},{transform:'scale(1)'}],{duration:150});
 }
@@ -1410,17 +1675,33 @@ function renderWordList(){
   `).join('');
 }
 window.focusWord = async function(word){
-  const targets = $$('.reader .word');
-  let n = 0;
-  targets.forEach(el=>{
-    if(toLowerAlpha(el.dataset.w)===word){
-      if(n===0){
-        el.scrollIntoView({behavior:'smooth', block:'center'});
-        el.animate([{background:'rgba(56,189,248,.20)'},{background:'transparent'}],{duration:900});
-      }
-      n++;
+  const key = toLowerAlpha(word);
+  let nodes = getWordNodes(key);
+  let targetSegIdx = null;
+  if(!nodes.length && compiledSegments.length){
+    const idx = findFirstSegmentIndexForWord(key);
+    if(idx >= 0){
+      targetSegIdx = idx;
+      scrollToSegmentIndex(idx);
+      nodes = getWordNodes(key);
     }
-  });
+  }
+  const animateNode = ()=>{
+    const targetNode = (nodes && nodes.length) ? nodes[0] : getWordNodes(key)[0];
+    if(!targetNode) return;
+    const segEl = targetNode.closest('.seg');
+    if(segEl && segEl.dataset.i){
+      scrollToSegmentIndex(parseInt(segEl.dataset.i || '0', 10));
+    }else{
+      targetNode.scrollIntoView({behavior:'smooth', block:'center'});
+    }
+    targetNode.animate([{background:'rgba(56,189,248,.20)'},{background:'transparent'}],{duration:900});
+  };
+  if(nodes.length){
+    animateNode();
+  }else if(targetSegIdx !== null){
+    setTimeout(animateNode, 120);
+  }
 
   const x = getWord(word);
   if(!x) return;
@@ -1482,7 +1763,7 @@ function importJSONFile(file){
       });
       saveWords(Array.from(map.values()));
       renderWordList();
-      applyHFClassesToReader();
+      applyHFClassesToReader({ force:true });
       alert('匯入完成');
     }catch(err){ alert('匯入失敗：'+err.message); }
   };
@@ -1571,7 +1852,7 @@ function importCSVText(csvText){
   }
   saveWords(Array.from(map.values()));
   renderWordList();
-  applyHFClassesToReader();
+  applyHFClassesToReader({ force:true });
   alert(`CSV 匯入完成：新增 ${added} 筆、更新 ${updated} 筆（每字額外 +5 次點擊）。`);
 }
 function importCSVFile(file){
@@ -2177,6 +2458,12 @@ function bindStoryUI(){
 }
 
 /* ========= 一般綁定 ========= */
+function bindReaderDelegates(){
+  if(!reader) return;
+  reader.addEventListener('pointerdown', handleReaderPointerDown, { passive: true });
+  reader.addEventListener('click', handleReaderClick);
+  reader.addEventListener('dblclick', handleReaderDblClick);
+}
 function bindGeneralUI(){
   $('#compile')?.addEventListener('click', ()=>{ compile(); applyScrollProgress(reader, 0); saveActiveSlot(); });
   $('#sample')?.addEventListener('click', ()=>{
@@ -2192,7 +2479,9 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
     compile(); applyScrollProgress(reader, 0); saveActiveSlot(); setStatus('已貼上範例，已儲存到書格');
   });
   $('#clearAll')?.addEventListener('click', ()=>{
-    $('#src').value=''; reader.innerHTML='<div class="empty">已清空，請貼上新文章。</div>';
+    $('#src').value=''; compiledSegments = []; useVirtualScroll = false; deductedWords.clear(); clearWordNodeMap(); segmentHeights.length = 0;
+    teardownReader();
+    reader.innerHTML='<div class="empty">已清空，請貼上新文章。</div>';
     for(const [,v] of segAudios){ try{ URL.revokeObjectURL(v.url); }catch{} }
     segAudios.clear(); ttsGenerated=false; ttsDrawer.classList.remove('show');
     updateProgressUI(0); saveActiveSlot();
@@ -2212,8 +2501,9 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
   });
   $('#resetWords')?.addEventListener('click', ()=>{
     if(confirm('確定要清空生字本？此動作無法復原。')){
-      saveWords([]); renderWordList(); applyHFClassesToReader();
-      $$('.reader .word').forEach(el=> el.classList.remove('deducted'));
+      saveWords([]); renderWordList(); applyHFClassesToReader({ force:true });
+      deductedWords.clear();
+      wordNodeMap.forEach(set => set.forEach(el => el.classList.remove('deducted')));
     }
   });
   $('#q')?.addEventListener('input', renderWordList);

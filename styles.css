@@ -81,7 +81,11 @@ button:active{transform:translateY(1px)}
 }
 .reader .word:active { transform: scale(1.03) }
 .reader{ padding-bottom: 72px; }
-.seg{position:relative; padding-left:20px; margin:4px 0;}
+.seg{
+  position:relative; padding-left:20px; margin:4px 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 1em 120px;
+}
 .seg.empty{padding-left:0;}
 .seg .playseg{
   position:absolute; left:0; top:0.1em; border:1px solid var(--border);
@@ -96,6 +100,8 @@ button:active{transform:translateY(1px)}
   border-radius:12px;
   transition:background .2s ease, outline-color .2s ease;
 }
+.virtual-viewport{display:flex;flex-direction:column;gap:0;}
+.virtual-pad{width:100%;height:0;flex-shrink:0;}
 
 .reader .hf15{outline:2px solid var(--blue); background:rgba(56,189,248,.10)}
 .reader .hf50{outline:1px dashed var(--green); background:rgba(34,197,94,.08)}
