@@ -42,8 +42,15 @@
 - TTS：OpenAI `https://api.openai.com/v1/audio/speech`，使用 `gpt-4o-mini-tts`，聲線 `verse`（男）/`alloy`（女），支援語速 `#rateRange`。
 - Google Sheet：需自行替換 `WEB_APP_URL` 為 Apps Script Web App；使用 `mode:'no-cors'`，失敗時入佇列。
 
-**跨裝置同步（GAS Web App）**
-- 在 Google Apps Script 建立專案，貼上以下範本，替換 `TOKEN` 為亂碼、`FOLDER_ID` 為雲端硬碟資料夾 ID，部署為 Web App（建議權限 Anyone）：  
+**跨裝置同步（Cloud Run Proxy）**
+- GitHub Pages 版固定 `API_BASE=https://gas-proxy-678824560367.asia-east1.run.app`，同步時只需填同步 ID，會對 `GET/POST ${API_BASE}/api/state?id=<ID>` 做 JSON 讀寫。範例：  
+  ```js
+  const API_BASE = 'https://gas-proxy-678824560367.asia-east1.run.app';
+  await fetch(`${API_BASE}/api/state?id=JIM`);
+  await fetch(`${API_BASE}/api/state?id=JIM`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ a: 1 }) });
+  ```
+- Proxy 會轉發到你的 GAS Web App（`gas-proxy/server.js` 的 `GAS_BASE`），並以環境變數 `GAS_TOKEN` 注入 token；部署 Cloud Run 時記得設 `ALLOW_ORIGIN` 為 GitHub Pages 網域。若要自架，改 `src/main.js` 的 `API_BASE` 指向你的 Proxy。
+- 若尚未有 GAS Web App，可使用以下範本，替換 `TOKEN` 為亂碼、`FOLDER_ID` 為雲端硬碟資料夾 ID，部署為 Web App：  
   ```js
   const TOKEN = '換成亂碼';
   const FOLDER_ID = '你的資料夾ID';
@@ -59,8 +66,8 @@
   function text(str){ return ContentService.createTextOutput(str); }
   function forbidden(){ return ContentService.createTextOutput('forbidden').setResponseCode(403); }
   ```
-- 前端左上新增「跨裝置同步」區：填入 Web App URL、同步 Token、自訂同步 ID（雲端檔名 `<id>.json`），按「儲存設定」即可寫入 localStorage；按「立即同步」會先拉遠端再寫回。
-- 自動推送：儲存書格 (`儲存到書格`)、生字本寫入/匯入/扣分/備註等都會 debounce 後推送遠端。頁面載入時若已有同步 ID＋URL＋Token 會先嘗試拉取；失敗則維持本機資料。
+- UI：同步區只需填同步 ID（雲端檔名 `<id>.json`），按「儲存設定」寫入 localStorage；按「立即同步」會先拉遠端再寫回；清空同步 ID 回到僅用本機。
+- 自動推送：儲存書格 (`儲存到書格`)、生字本寫入/匯入/扣分/備註等都會 debounce 後推送遠端。頁面載入時若已有同步 ID 會先嘗試拉取；失敗則維持本機資料。
 - 同步內容：`slots`、`activeSlotId`、以及當前語言的 `words`（同 `loadWords()`，payload 會附上 `lang` 與 `updatedAt`）。遠端檔案不存在時會自動建立。
 - 離線/失敗保護：所有資料仍保留在 localStorage，遠端錯誤只會顯示狀態，不會阻擋本機存取；按「停用遠端」可清除設定回純本機。
 

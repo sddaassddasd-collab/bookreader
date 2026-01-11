@@ -44,16 +44,14 @@
           </div>
 
           <div class="sync-box">
-            <div class="label">跨裝置同步（GAS Web App）</div>
+            <div class="label">跨裝置同步（Cloud Run 代理）</div>
             <div class="row sync-row">
-              <input id="remoteExecInput" placeholder="GAS Web App URL（https://script.google.com/.../exec）">
-              <input id="remoteTokenInput" type="password" placeholder="同步 Token（僅存本機）">
-              <input id="remoteIdInput" placeholder="同步 ID（雲端檔名 <id>.json）">
+              <input id="remoteIdInput" placeholder="同步 ID（例：JIM，檔名 <id>.json）">
               <button id="saveRemote" class="secondary">儲存設定</button>
               <button id="syncNow" class="secondary">立即同步</button>
               <button id="clearRemote" class="ghost">停用遠端</button>
             </div>
-            <div class="help">填好 URL + Token + 自訂 ID 後按「立即同步」會先讀取遠端、再寫回；若清空欄位則回到僅用本機。</div>
+            <div class="help">GitHub Pages 版已內建 API_BASE=https://gas-proxy-678824560367.asia-east1.run.app，只需填同步 ID；按「立即同步」會先讀取遠端、再寫回。</div>
           </div>
 
           <label for="src" class="input-label">在下方貼上英文／德文／法文文章：</label>

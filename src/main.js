@@ -11,10 +11,12 @@ import {
 /* ========= ✅ 換成你的 Apps Script Web App URL ========= */
 const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyo3LWQPC-XOdEmslQoIbFrrF4vbZ1egyAKMmUixVgsRP7RQ8ebnRn2WqL6h7cubQwJyQ/exec';
 
-/* ========= 遠端同步（GAS Web App） ========= */
+/* ========= 遠端同步（Cloud Run Proxy） ========= */
+const API_BASE = 'https://gas-proxy-678824560367.asia-east1.run.app';
+const REMOTE_ENDPOINT = `${API_BASE}/api/state`;
 const REMOTE_ID_KEY = 'local-text-reader.remote.id';
-const REMOTE_EXEC_KEY = 'local-text-reader.remote.exec';
-const REMOTE_TOKEN_KEY = 'local-text-reader.remote.token';
+const LEGACY_REMOTE_EXEC_KEY = 'local-text-reader.remote.exec';
+const LEGACY_REMOTE_TOKEN_KEY = 'local-text-reader.remote.token';
 const REMOTE_DEBOUNCE_MS = 1000;
 
 /* ========= 字典開關（存本機 localStorage） ========= */
@@ -71,8 +73,6 @@ let isImmersive = false;
 let readerHome = null;
 
 let remoteId = loadRemoteId();
-let REMOTE_EXEC_URL = loadRemoteExecUrl();
-let REMOTE_TOKEN = loadRemoteToken();
 let remotePushTimer = null;
 
 let currentAudio = null;
@@ -265,28 +265,16 @@ function saveRemoteId(id){
   try{ localStorage.setItem(REMOTE_ID_KEY, remoteId); }catch{}
   return remoteId;
 }
-function loadRemoteExecUrl(){ try{ return (localStorage.getItem(REMOTE_EXEC_KEY) || '').trim(); }catch{ return ''; } }
-function saveRemoteExecUrl(url){
-  REMOTE_EXEC_URL = (url || '').trim();
-  try{ localStorage.setItem(REMOTE_EXEC_KEY, REMOTE_EXEC_URL); }catch{}
-  return REMOTE_EXEC_URL;
-}
-function loadRemoteToken(){ try{ return (localStorage.getItem(REMOTE_TOKEN_KEY) || '').trim(); }catch{ return ''; } }
-function saveRemoteToken(token){
-  REMOTE_TOKEN = (token || '').trim();
-  try{ localStorage.setItem(REMOTE_TOKEN_KEY, REMOTE_TOKEN); }catch{}
-  return REMOTE_TOKEN;
-}
-function hasRemoteConfig(){ return Boolean(remoteId && REMOTE_EXEC_URL && REMOTE_TOKEN); }
+function hasRemoteConfig(){ return Boolean((remoteId || '').trim()); }
 function buildRemoteUrl(id){
   const target = (id || remoteId || '').trim();
-  return `${REMOTE_EXEC_URL}?id=${encodeURIComponent(target)}&token=${encodeURIComponent(REMOTE_TOKEN)}`;
+  const url = new URL(REMOTE_ENDPOINT);
+  url.searchParams.set('id', target);
+  return url.toString();
 }
 async function pullRemoteState(id = remoteId){
   const targetId = (id || remoteId || '').trim();
   if(!targetId) throw new Error('請先輸入同步 ID');
-  if(!REMOTE_EXEC_URL) throw new Error('請先輸入同步網址');
-  if(!REMOTE_TOKEN) throw new Error('請先輸入同步 Token');
 
   const resp = await fetch(buildRemoteUrl(targetId), { method:'GET' });
   if(!resp.ok){
@@ -326,8 +314,6 @@ async function pullRemoteState(id = remoteId){
 async function pushRemoteState(id = remoteId){
   const targetId = (id || remoteId || '').trim();
   if(!targetId) throw new Error('請先輸入同步 ID');
-  if(!REMOTE_EXEC_URL) throw new Error('請先輸入同步網址');
-  if(!REMOTE_TOKEN) throw new Error('請先輸入同步 Token');
 
   const payload = { slots, activeSlotId, words: loadWords(), lang: getLang(), updatedAt: nowISO() };
   const resp = await fetch(buildRemoteUrl(targetId), {
@@ -357,32 +343,24 @@ function scheduleRemotePush(){
 }
 function clearRemoteConfig(){
   remoteId = '';
-  REMOTE_EXEC_URL = '';
-  REMOTE_TOKEN = '';
   try{
     localStorage.removeItem(REMOTE_ID_KEY);
-    localStorage.removeItem(REMOTE_EXEC_KEY);
-    localStorage.removeItem(REMOTE_TOKEN_KEY);
+    localStorage.removeItem(LEGACY_REMOTE_EXEC_KEY);
+    localStorage.removeItem(LEGACY_REMOTE_TOKEN_KEY);
   }catch{}
   clearTimeout(remotePushTimer);
 }
 
 /* ========= 遠端同步 UI ========= */
 function bindRemoteUI(){
-  const execInput = document.getElementById('remoteExecInput');
-  const tokenInput = document.getElementById('remoteTokenInput');
   const idInput = document.getElementById('remoteIdInput');
   const saveBtn = document.getElementById('saveRemote');
   const syncBtn = document.getElementById('syncNow');
   const clearBtn = document.getElementById('clearRemote');
 
-  if(execInput) execInput.value = REMOTE_EXEC_URL;
-  if(tokenInput) tokenInput.value = REMOTE_TOKEN;
   if(idInput) idInput.value = remoteId;
 
   const persistInputs = ()=>{
-    if(execInput) saveRemoteExecUrl(execInput.value);
-    if(tokenInput) saveRemoteToken(tokenInput.value);
     if(idInput) saveRemoteId(idInput.value);
   };
 
@@ -396,7 +374,7 @@ function bindRemoteUI(){
   syncBtn?.addEventListener('click', async ()=>{
     persistInputs();
     if(!hasRemoteConfig()){
-      alert('請填入同步網址、Token 與同步 ID');
+      alert('請填入同步 ID');
       return;
     }
     try{
@@ -412,8 +390,6 @@ function bindRemoteUI(){
 
   clearBtn?.addEventListener('click', ()=>{
     clearRemoteConfig();
-    if(execInput) execInput.value = '';
-    if(tokenInput) tokenInput.value = '';
     if(idInput) idInput.value = '';
     setStatus('已停用遠端同步，僅使用本機儲存');
   });
