@@ -93,6 +93,20 @@ let wordsSaveTimer = null;
 let wordsSavePayload = null;
 let wordUiRenderScheduled = false;
 
+function captureLLMAndLangPrefs(){
+  return {
+    provider: getSelectedProvider(),
+    modelSelect: (document.getElementById('modelSelect')?.value || '').trim(),
+    modelCustom: (document.getElementById('modelCustom')?.value || '').trim(),
+    level: (document.getElementById('levelSelect')?.value || 'B1'),
+    lang: getLang(),
+    genre: (document.getElementById('genreSelect')?.value || 'fairy_tale'),
+    customTopic: getCustomTopic(),
+    length: getTargetLen(),
+    voicePref: (document.getElementById('voicePref')?.value || 'male')
+  };
+}
+
 /* ========= 初始化 ========= */
 init();
 
@@ -353,6 +367,13 @@ async function pullRemoteState(id = remoteId){
     return {};
   }
 
+  if(typeof data.lang === 'string'){
+    const langEl = document.getElementById('langSelect');
+    if(langEl) langEl.value = data.lang;
+  }
+  if(data.llm && typeof data.llm === 'object'){
+    applyRemoteLLMConfig(data.llm);
+  }
   if(Array.isArray(data.slots)){
     saveSlots(data.slots);
     slots = loadSlots();
@@ -372,6 +393,7 @@ async function pullRemoteState(id = remoteId){
     saveWords(data.words, { skipRemote: true });
   }
 
+  updateUILang();
   renderSlotBoard();
   setActiveSlot(activeSlotId);
   renderWordList();
@@ -382,7 +404,14 @@ async function pushRemoteState(id = remoteId){
   const targetId = (id || remoteId || '').trim();
   if(!targetId) throw new Error('請填同步 ID（不用填同步網址或 Token）');
 
-  const payload = { slots, activeSlotId, words: loadWords(), lang: getLang(), updatedAt: nowISO() };
+  const payload = {
+    slots,
+    activeSlotId,
+    words: loadWords(),
+    lang: getLang(),
+    llm: captureLLMAndLangPrefs(),
+    updatedAt: nowISO()
+  };
   const resp = await fetch(buildRemoteUrl(targetId), {
     method:'POST',
     headers:{ 'Content-Type':'application/json' },
@@ -417,6 +446,27 @@ function clearRemoteConfig(){
     localStorage.removeItem(LEGACY_REMOTE_TOKEN_KEY);
   }catch{}
   clearTimeout(remotePushTimer);
+}
+
+function applyRemoteLLMConfig(pref = {}){
+  const providerSelect = document.getElementById('providerSelect');
+  if(providerSelect && pref.provider) providerSelect.value = pref.provider;
+  const modelSelect = document.getElementById('modelSelect');
+  if(modelSelect && pref.modelSelect) modelSelect.value = pref.modelSelect;
+  const modelCustom = document.getElementById('modelCustom');
+  if(modelCustom && typeof pref.modelCustom === 'string') modelCustom.value = pref.modelCustom;
+  const levelSelect = document.getElementById('levelSelect');
+  if(levelSelect && pref.level) levelSelect.value = pref.level;
+  const genreSelect = document.getElementById('genreSelect');
+  if(genreSelect && pref.genre) genreSelect.value = pref.genre;
+  const customTopic = document.getElementById('customTopic');
+  if(customTopic && typeof pref.customTopic === 'string') customTopic.value = pref.customTopic;
+  const lengthInput = document.getElementById('lengthInput');
+  if(lengthInput && pref.length) lengthInput.value = pref.length;
+  const voicePref = document.getElementById('voicePref');
+  if(voicePref && pref.voicePref) voicePref.value = pref.voicePref;
+  const langSelect = document.getElementById('langSelect');
+  if(langSelect && pref.lang) langSelect.value = pref.lang;
 }
 
 /* ========= 遠端同步 UI ========= */
