@@ -86,6 +86,13 @@ let ttsGenerated = false;
 const segAudios = new Map(); // idx -> { url, voice }
 let currentSegIdx = null;
 
+const WORD_SAVE_DEBOUNCE_MS = 120;
+let wordsCache = null;
+let wordsCacheKey = null;
+let wordsSaveTimer = null;
+let wordsSavePayload = null;
+let wordUiRenderScheduled = false;
+
 /* ========= 初始化 ========= */
 init();
 
@@ -822,9 +829,32 @@ function bindTTSUI(){
 }
 
 /* ========= 本機資料（生字本） ========= */
-function loadWords(){ try{ return JSON.parse(localStorage.getItem(_curStoreKey())) || [] } catch { return [] } }
+function persistWordsToStorage(key, list){
+  try{ localStorage.setItem(key, JSON.stringify(list)); }catch{}
+}
+function loadWords(){
+  const key = _curStoreKey();
+  if(wordsCache && wordsCacheKey === key) return wordsCache;
+  wordsCacheKey = key;
+  try{
+    wordsCache = JSON.parse(localStorage.getItem(key)) || [];
+  }catch{
+    wordsCache = [];
+  }
+  return wordsCache;
+}
 function saveWords(list, opts = {}){
-  localStorage.setItem(_curStoreKey(), JSON.stringify(list));
+  const key = _curStoreKey();
+  wordsCacheKey = key;
+  wordsCache = list;
+  wordsSavePayload = { key, list };
+  if(wordsSaveTimer) clearTimeout(wordsSaveTimer);
+  wordsSaveTimer = setTimeout(()=>{
+    wordsSaveTimer = null;
+    if(!wordsSavePayload) return;
+    persistWordsToStorage(wordsSavePayload.key, wordsSavePayload.list);
+    wordsSavePayload = null;
+  }, WORD_SAVE_DEBOUNCE_MS);
   if(!opts.skipRemote) scheduleRemotePush();
 }
 function loadQueue(){ try{ return JSON.parse(localStorage.getItem(_curQueueKey())) || [] } catch { return [] } }
@@ -849,6 +879,20 @@ async function flushQueue(){
 }
 window.addEventListener('online', flushQueue);
 setInterval(flushQueue, 8000);
+function scheduleWordUiRefresh(){
+  if(wordUiRenderScheduled) return;
+  wordUiRenderScheduled = true;
+  const runner = ()=>{
+    wordUiRenderScheduled = false;
+    renderWordList();
+    applyHFClassesToReader();
+  };
+  if(typeof requestIdleCallback === 'function'){
+    requestIdleCallback(runner, { timeout: 120 });
+  }else{
+    requestAnimationFrame(runner);
+  }
+}
 function upsertWord(word, payload = {}, inc = true){
   const base = loadWords();
   const key = toLowerAlpha(word);
@@ -873,8 +917,7 @@ function upsertWord(word, payload = {}, inc = true){
     });
   }
   saveWords(base);
-  renderWordList();
-  applyHFClassesToReader();
+  scheduleWordUiRefresh();
 }
 function adjustWordCount(word, delta){
   const base = loadWords();
@@ -884,8 +927,7 @@ function adjustWordCount(word, delta){
   base[idx].count = Math.max(0, (base[idx].count||0) + delta);
   base[idx].lastSeen = nowISO();
   saveWords(base);
-  renderWordList();
-  applyHFClassesToReader();
+  scheduleWordUiRefresh();
 }
 function updateWordNote(word, note){
   const base = loadWords();
@@ -895,7 +937,7 @@ function updateWordNote(word, note){
     base[idx].note = note;
     base[idx].lastSeen = nowISO();
     saveWords(base);
-    renderWordList();
+    scheduleWordUiRefresh();
   }
 }
 function getWord(word){
@@ -1196,18 +1238,16 @@ async function processSingleClick(el){
         node.classList.remove('deducted');
       }
     });
-    applyHFClassesToReader();
+    scheduleWordUiRefresh();
     return;
   }
   if(isDictOff()){
     upsertWord(word, { display }, true);
-    applyHFClassesToReader();
     return;
   }
 
   showWordCardSkeleton(display, word);
   upsertWord(word, { display }, true);
-  applyHFClassesToReader();
 
   try{
     const info = await lookupDefinition(word);
@@ -1281,6 +1321,7 @@ function renderWordList(){
   const box = $('#wordList');
   const q = ($('#q').value || '').trim().toLowerCase();
   const all = loadWords()
+    .slice()
     .sort((a,b)=> (b.lastSeen||'').localeCompare(a.lastSeen||''));
   const list = q ? all.filter(x =>
         x.word.includes(q) || (x.note||'').toLowerCase().includes(q) ) : all;
