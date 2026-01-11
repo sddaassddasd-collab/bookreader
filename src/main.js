@@ -5,6 +5,8 @@ import {
   loadActiveSlotId,
   saveActiveSlotId,
   saveSlots,
+  loadProgressMap,
+  saveProgressMap,
   MAX_SLOTS,
 } from './storage.js';
 
@@ -66,14 +68,16 @@ const exitImmersiveBtn = $('#exitImmersive');
 
 /* ========= 狀態 ========= */
 let slots = loadSlots();
+let progressMap = loadProgressMap();
 let activeSlotId = clampId(loadActiveSlotId());
-let scrollTimer = null;
 let lastSelectionText = '';
 let isImmersive = false;
 let readerHome = null;
 
 let remoteId = loadRemoteId();
 let remotePushTimer = null;
+let progressSaveHandle = null;
+let progressSaveTimer = null;
 
 let currentAudio = null;
 let playQueue = [];
@@ -125,6 +129,7 @@ function bindSlotUI() {
     for (let i = 1; i <= MAX_SLOTS; i += 1) {
       slots = resetSlot(slots, i);
     }
+    resetAllProgressInMap();
     setActiveSlot(1);
     renderSlotBoard();
     setStatus('已清空全部書格');
@@ -132,6 +137,7 @@ function bindSlotUI() {
   });
   $('#resetProgressBtn')?.addEventListener('click', () => {
     applyScrollProgress(reader, 0);
+    setSlotProgressInMap(activeSlotId, 0);
     slots = updateSlot(slots, activeSlotId, { progress: 0 });
     renderSlotBoard();
     updateProgressUI(0);
@@ -144,12 +150,7 @@ function bindSlotUI() {
 function onReaderScroll() {
   const ratio = getScrollProgress(reader);
   updateProgressUI(ratio);
-  clearTimeout(scrollTimer);
-  scrollTimer = setTimeout(() => {
-    slots = updateSlot(slots, activeSlotId, { progress: ratio });
-    renderSlotBoard();
-    setStatus(`進度自動儲存（書格 ${activeSlotId}）`);
-  }, 240);
+  setSlotProgressInMap(activeSlotId, ratio);
 }
 
 function renderSlotBoard() {
@@ -174,17 +175,21 @@ function renderSlotBoard() {
     const updated = slot.updatedAt ? `更新 ${formatTime(slot.updatedAt)}` : '尚未儲存';
     const words = slot.content ? `${countWords(slot.content)} 字` : '無內容';
     meta.textContent = `${updated} · ${words}`;
+    const progressVal = (() => {
+      const v = getSlotProgressFromMap(slot.id);
+      return v !== null ? v : (slot.progress || 0);
+    })();
 
     const prog = document.createElement('div');
     prog.className = 'slot-progress';
     const bar = document.createElement('div');
     bar.className = 'bar';
     const barFill = document.createElement('span');
-    barFill.style.width = `${Math.round((slot.progress || 0) * 100)}%`;
+    barFill.style.width = `${Math.round((progressVal || 0) * 100)}%`;
     bar.append(barFill);
     const progText = document.createElement('div');
     progText.className = 'small';
-    progText.textContent = `進度 ${Math.round((slot.progress || 0) * 100)}%`;
+    progText.textContent = `進度 ${Math.round((progressVal || 0) * 100)}%`;
     prog.append(bar, progText);
 
     const actions = document.createElement('div');
@@ -203,6 +208,7 @@ function renderSlotBoard() {
       e.stopPropagation();
       if (!confirm(`確定刪除書格 ${slot.id} 的內容與進度？`)) return;
       slots = resetSlot(slots, slot.id);
+      resetProgressInMap(slot.id);
       if (activeSlotId === slot.id) setActiveSlot(slot.id);
       renderSlotBoard();
       setStatus(`已清空書格 ${slot.id}`);
@@ -220,14 +226,19 @@ function setActiveSlot(id) {
   const slot = findSlot(id) || findSlot(1);
   activeSlotId = slot.id;
   saveActiveSlotId(activeSlotId);
+  const savedProgress = getSlotProgressFromMap(slot.id);
+  const progress = savedProgress !== null ? savedProgress : (slot.progress || 0);
+  if(savedProgress === null){
+    setSlotProgressInMap(slot.id, progress);
+  }
 
   activeSlotLabel.textContent = `書格 ${slot.id}`;
   slotTitleInput.value = slot.title || `書本 ${slot.id}`;
   $('#src').value = slot.content || '';
 
   compile();
-  applyScrollProgress(reader, slot.progress || 0);
-  updateProgressUI(slot.progress || 0);
+  applyScrollProgress(reader, progress);
+  updateProgressUI(progress);
   renderSlotBoard();
   setStatus(`已切換到書格 ${slot.id}`);
 }
@@ -237,6 +248,7 @@ function saveActiveSlot() {
   const title = slotTitleInput.value.trim() || `書本 ${activeSlotId}`;
   const progress = getScrollProgress(reader);
 
+  setSlotProgressInMap(activeSlotId, progress);
   slots = updateSlot(slots, activeSlotId, { content, title, progress });
   renderSlotBoard();
   setStatus(`已儲存到書格 ${activeSlotId}`);
@@ -258,6 +270,46 @@ function clampId(id){ const num = Number.isFinite(id)?id:1; return Math.min(Math
 function getLang(){ const el = document.getElementById('langSelect'); return el ? el.value : 'en'; }
 function _curStoreKey(){ return STORE_KEYS[getLang()] || STORE_KEYS.en; }
 function _curQueueKey(){ return QUEUE_KEYS[getLang()] || QUEUE_KEYS.en; }
+
+function scheduleProgressSave(){
+  if(typeof requestIdleCallback === 'function'){
+    if(progressSaveHandle && typeof cancelIdleCallback === 'function'){
+      cancelIdleCallback(progressSaveHandle);
+    }
+    progressSaveHandle = requestIdleCallback(()=>{
+      progressSaveHandle = null;
+      saveProgressMap(progressMap);
+    }, { timeout: 1200 });
+  }else{
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = setTimeout(()=>{
+      progressSaveTimer = null;
+      saveProgressMap(progressMap);
+    }, 1000);
+  }
+}
+function getSlotProgressFromMap(id){
+  const key = clampId(id);
+  const v = progressMap ? progressMap[key] : undefined;
+  return Number.isFinite(v) ? Math.min(Math.max(v,0),1) : null;
+}
+function setSlotProgressInMap(id, ratio){
+  const key = clampId(id);
+  const next = Math.min(Math.max(Number(ratio) || 0, 0), 1);
+  if(progressMap && progressMap[key] === next) return;
+  progressMap = { ...(progressMap || {}), [key]: next };
+  scheduleProgressSave();
+}
+function resetProgressInMap(id){
+  const key = clampId(id);
+  if(!progressMap || progressMap[key] === 0) return;
+  progressMap = { ...(progressMap || {}), [key]: 0 };
+  scheduleProgressSave();
+}
+function resetAllProgressInMap(){
+  progressMap = {};
+  scheduleProgressSave();
+}
 
 function loadRemoteId(){ try{ return (localStorage.getItem(REMOTE_ID_KEY) || '').trim(); }catch{ return ''; } }
 function saveRemoteId(id){
@@ -296,6 +348,13 @@ async function pullRemoteState(id = remoteId){
   if(Array.isArray(data.slots)){
     saveSlots(data.slots);
     slots = loadSlots();
+    const nextProgress = {};
+    slots.forEach(s=>{
+      const key = clampId(s.id);
+      nextProgress[key] = Math.min(Math.max(Number(s.progress) || 0, 0), 1);
+    });
+    progressMap = nextProgress;
+    saveProgressMap(progressMap);
   }
   if(typeof data.activeSlotId !== 'undefined'){
     activeSlotId = clampId(data.activeSlotId);

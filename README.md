@@ -23,12 +23,13 @@
 
 **狀態與持久化**
 - 書格：`local-text-reader.slots.v1` 儲存 5 格 `{ id,title,content,createdAt,updatedAt,progress }`；`local-text-reader.activeSlot.v1` 保存目前使用的格。
+- 捲動進度：`local-text-reader.progress.v1` 以 `{ [slotId]: progress }` 保存各書格的捲動比例（僅存數值，避免捲動時重寫全文）。
 - 生字本：依語言分 `word-noter.en.v1` / `word-noter.de.v1` / `word-noter.fr.v1`（欄位 `{ word, display, count, pos, phon, defs, note, firstSeen, lastSeen }`）；搜尋用 `#q`，列表按 `lastSeen` 反向排序。
 - 其他 key：`word-noter.queue.{en|de|fr}.v1`（Google Sheet 備援佇列）、`word-noter.dict.off`（是否關閉字典卡）、`word-noter.openai.key` / `word-noter.grok.key`（僅存在本機）。
 - 執行期狀態：`slots`、`activeSlotId`、`segAudios`（Map: seg idx → {url, voice}）、`ttsGenerated`、`playQueue`、`lastSelectionText` 等。
 
 **核心流程**
-- 書格管理：`renderSlotBoard` 產出卡片；`saveActiveSlot` 寫入文字＋標題＋當下卷軸進度；`onReaderScroll` 以 240ms 節流自動更新 `progress`；`resetSlot`/`resetProgressBtn` 清空單格或進度。
+- 書格管理：`renderSlotBoard` 產出卡片；`saveActiveSlot` 寫入文字＋標題＋當下卷軸進度；`onReaderScroll` 只更新「進度 map」（idle/fallback 1s 寫入，避免捲動時重寫全文）；`resetSlot`/`resetProgressBtn` 清空單格或進度。
 - 文章渲染：`compile` 將 `#src` 逐行裁切為 `.seg`，每個單字包 `<span class="word" data-w>`（語言由 `#langSelect` 決定 regex，德/法使用 Unicode 單字匹配）；重建時會移除 TTS 緩存並重新綁定點擊事件與播放按鈕監聽。
 - 點字 / 生字本：單擊 `processSingleClick` → 新增/累計生字、若字典開啟則呼叫 `lookupDefinition`（英/德/法分流，透過 `generateEnglishEntry`/`generateGermanEntry`/`generateFrenchEntry`）並更新 `#card`；雙擊 `processDoubleClick` → `adjustWordCount(-2)` 並為該字加 `.deducted`（停用高頻框）。高頻標示：`applyHFClassesToReader` 依 `count` 前 15/50 套 `.hf15/.hf50`。
 - 生成內容：`#genContent` 觸發 `generateContentWithOpenAI`（供應商來自 `#providerSelect`，模型 `#modelSelect` 或 `#modelCustom`，詞彙優先取生字本前 15；依 `#langSelect` 在英/德/法之間切換提示）；若缺字則 `reviseContentToInclude` 再修稿。產出寫入 `#src`，自動 `compile`。

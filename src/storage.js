@@ -1,5 +1,6 @@
 const STORAGE_KEY = 'local-text-reader.slots.v1';
 const ACTIVE_KEY = 'local-text-reader.activeSlot.v1';
+const PROGRESS_KEY = 'local-text-reader.progress.v1';
 export const MAX_SLOTS = 5;
 
 export function defaultSlot(id) {
@@ -49,6 +50,35 @@ function writeSlots(slots) {
   } catch {
     /* ignore */
   }
+}
+
+function readProgress() {
+  try {
+    const stored = localStorage.getItem(PROGRESS_KEY);
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeProgress(map) {
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
+function normalizeProgress(raw) {
+  const out = {};
+  if (raw && typeof raw === 'object') {
+    Object.entries(raw).forEach(([k, v]) => {
+      const idNum = clampId(Number(k));
+      if (!Number.isFinite(idNum)) return;
+      out[idNum] = clampProgress(v ?? 0);
+    });
+  }
+  return out;
 }
 
 export function loadSlots() {
@@ -113,4 +143,15 @@ function clampId(id) {
 function clampProgress(v) {
   const num = Number.isFinite(v) ? v : 0;
   return Math.min(Math.max(num, 0), 1);
+}
+
+export function loadProgressMap() {
+  const raw = readProgress();
+  const normalized = normalizeProgress(raw);
+  writeProgress(normalized);
+  return normalized;
+}
+
+export function saveProgressMap(map) {
+  writeProgress(normalizeProgress(map));
 }
