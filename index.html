@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>本地閱讀器｜五格書架＋生字本＋生成解析＋TTS</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <strong>本地閱讀器＋生字本</strong>
+      <div class="status" id="status">就緒</div>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="panel slots">
+      <div class="side-head">
+        <div>
+          <div class="label">五格書架（本機儲存文字＋捲動進度）</div>
+          <div class="small">點卡片切換；儲存會覆蓋該格內容與進度</div>
+        </div>
+        <div class="row">
+          <button id="resetAllSlots" class="ghost">清空全部書格</button>
+        </div>
+      </div>
+      <div id="slotBoard" class="slot-list"></div>
+    </div>
+
+    <div class="layout">
+      <section>
+        <div class="editor panel">
+          <div class="slot-bar">
+            <div class="slot-meta">
+              <div class="label">目前書格</div>
+              <div class="active-slot" id="activeSlotLabel">書格 1</div>
+            </div>
+            <div class="slot-title">
+              <label for="slotTitle">標題</label>
+              <input id="slotTitle" placeholder="輸入此書格的標題">
+            </div>
+            <button id="saveSlot" class="accent">儲存到書格</button>
+          </div>
+
+          <div class="sync-box">
+            <div class="label">跨裝置同步（GAS Web App）</div>
+            <div class="row sync-row">
+              <input id="remoteExecInput" placeholder="GAS Web App URL（https://script.google.com/.../exec）">
+              <input id="remoteTokenInput" type="password" placeholder="同步 Token（僅存本機）">
+              <input id="remoteIdInput" placeholder="同步 ID（雲端檔名 <id>.json）">
+              <button id="saveRemote" class="secondary">儲存設定</button>
+              <button id="syncNow" class="secondary">立即同步</button>
+              <button id="clearRemote" class="ghost">停用遠端</button>
+            </div>
+            <div class="help">填好 URL + Token + 自訂 ID 後按「立即同步」會先讀取遠端、再寫回；若清空欄位則回到僅用本機。</div>
+          </div>
+
+          <label for="src" class="input-label">在下方貼上英文／德文／法文文章：</label>
+          <textarea id="src" placeholder="Paste your English article here..."></textarea>
+          <div class="row">
+            <button id="compile">產生可點文字</button>
+            <button id="sample" class="secondary">貼入範例</button>
+            <button id="clearAll" class="ghost">清空文章</button>
+            <button id="buildTTS" class="secondary">生成語音</button>
+            <select id="voicePref" class="select-sm">
+              <option value="male" selected>男</option>
+              <option value="female">女</option>
+            </select>
+          </div>
+          <div class="help">雙擊某字可扣 2，並讓該次生成的所有相同字變紅；重新產生會恢復。前 15 藍框、16–50 綠框。段落喇叭在「生成語音」後才出現。</div>
+        </div>
+
+        <div class="panel reader-wrap">
+          <div class="reader-head">
+            <div>
+              <div class="label">閱讀區</div>
+              <div class="small">點單字查字典／累積計次；進度自動儲存到書格</div>
+            </div>
+            <div class="progress">
+              <div class="progress-label" id="progressLabel">進度 0%</div>
+              <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+            </div>
+            <div class="reader-head-actions">
+              <button id="openImmersive" class="secondary">沉浸模式</button>
+              <button id="resetProgressBtn" class="secondary">重置進度</button>
+            </div>
+          </div>
+          <div id="reader" class="reader" aria-live="polite">
+            <div class="empty">尚未產生內容。請先貼上文章並點「產生可點文字」。</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidebar panel">
+        <div class="side-head">
+          <div>
+            <div style="font-weight:700">生字本</div>
+            <div class="help">（儲存於本機 localStorage；有解釋才背景傳送到 Google Sheet）</div>
+          </div>
+          <div class="tools">
+            <button id="exportCSV" class="secondary">匯出 CSV</button>
+            <button id="exportJSON" class="secondary">匯出 JSON</button>
+            <label class="secondary file-btn">
+              匯入 JSON
+              <input id="importJSON" type="file" accept="application/json">
+            </label>
+            <label class="secondary file-btn">
+              匯入 CSV
+              <input id="importCSV" type="file" accept=".csv,text/csv">
+            </label>
+            <button id="resetWords" class="danger">清空生字本</button>
+            <button id="toggleDict" class="secondary" title="點一下關閉字典卡">字典：開</button>
+          </div>
+        </div>
+
+        <div class="kblock">
+          <input id="openaiKey" type="password" placeholder="OpenAI API Key（僅存本機）">
+          <div class="model-row">
+            <label class="help" for="providerSelect">提供者：</label>
+            <select id="providerSelect">
+              <option value="openai" selected>OpenAI</option>
+              <option value="grok">Grok (xAI)</option>
+            </select>
+            <label class="help" for="modelSelect">模型：</label>
+            <select id="modelSelect" class="model-select"></select>
+            <input id="modelCustom" placeholder="或自行輸入模型名稱…" class="flex-1">
+          </div>
+          <input id="grokKey" type="password" placeholder="Grok API Key（僅存本機）" style="display:none;margin-top:8px">
+          <div class="model-row">
+            <label class="help" for="levelSelect">程度：</label>
+            <select id="levelSelect">
+              <option value="A1">A1</option><option value="A2">A2</option>
+              <option value="B1" selected>B1</option><option value="B2">B2</option>
+              <option value="C1">C1</option><option value="C2">C2</option>
+            </select>
+            <label class="help" for="langSelect">語言：</label>
+            <select id="langSelect">
+              <option value="en" selected>英語</option>
+              <option value="de">德語</option>
+              <option value="fr">法語</option>
+            </select>
+            <label class="help" for="genreSelect">類型：</label>
+            <select id="genreSelect">
+              <option value="fairy_tale" selected>童話故事</option>
+              <option value="dialogue">日常對話</option>
+              <option value="article">隨機領域專業文章</option>
+              <option value="mature_18">18＋</option>
+              <option value="custom">自訂主題</option>
+            </select>
+            <input id="customTopic" placeholder="輸入想要生成的主題／風格" class="flex-1" style="display:none">
+            <label class="help" for="lengthInput">字數：</label>
+            <input id="lengthInput" type="number" min="100" max="1200" step="50" value="500" class="number">
+            <button id="saveKey" class="secondary">儲存金鑰（本機）</button>
+            <button id="genContent">生成內容</button>
+          </div>
+          <div class="help">有生字本→取點擊最多的前 15；無單字→隨機生成。字數可在右側調整。</div>
+        </div>
+
+        <div class="search">
+          <input id="q" placeholder="搜尋生字或備註..." />
+          <button id="qClear" class="secondary">清除</button>
+        </div>
+
+        <div id="wordList" class="list"></div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- 單字解釋卡 -->
+  <div id="card" class="card" style="display:none">
+    <header>
+      <div id="cardTitle"><span class="badge">查詢</span></div>
+      <button id="cardClose" class="secondary">關閉</button>
+    </header>
+    <div class="content">
+      <div id="cardMeta" class="help"></div>
+      <ol id="defs" class="defs"></ol>
+      <div class="note-row">
+        <input id="noteInput" placeholder="加個備註（例：考點、例句、同義字）">
+        <button id="saveNote" class="secondary">儲存備註</button>
+      </div>
+      <div id="offlineTip" class="help" style="display:none;margin-top:8px">
+        無法連線字典或查無資料；你可手動輸入備註作為臨時解釋。
+      </div>
+      <div class="note-row">
+        <input id="wordQInput" placeholder="有什麼想問的（針對此單字）">
+        <button id="wordQBtn" class="secondary">送出問題</button>
+      </div>
+      <div id="qaBox" class="help" style="margin-top:8px;color:#a1a1aa"></div>
+    </div>
+  </div>
+
+  <!-- 句子解析卡 -->
+  <div id="analysisCard" class="analysis">
+    <header>
+      <div><span class="badge">解析</span> <strong>句子解析</strong></div>
+      <div class="actions">
+        <span id="selPreview" class="chip">未選取</span>
+        <button id="analysisClose" class="secondary">關閉</button>
+      </div>
+    </header>
+    <div class="content">
+      <div class="sec">
+        <h4>原文</h4>
+        <div id="anaSrc" class="quote"></div>
+      </div>
+      <div class="sec">
+        <h4>① 中文翻譯</h4>
+        <div id="anaZh" class="zh"></div>
+      </div>
+      <div class="sec">
+        <h4>②～⑤ 文法與片語</h4>
+        <ul id="anaGram" class="zh list"></ul>
+      </div>
+      <div id="extraQ" style="margin-top:10px">
+        <input id="extraQInput" placeholder="想問什麼？（針對選取文字）">
+        <button id="extraQBtn" class="secondary">送出問題</button>
+        <div id="extraQAns" class="help"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底部工具列 -->
+  <div class="bottom-bar" id="bottomBar">
+    <button id="doExplain" class="secondary">翻譯與文法</button>
+    <span class="status" id="selStatus">請先在左側文章中框選句子或片段</span>
+  </div>
+
+  <!-- TTS 抽屜 -->
+  <div class="tts-drawer" id="ttsDrawer">
+    <div class="handle">▶</div>
+    <div style="font-weight:700;margin-bottom:6px">語音播放</div>
+    <div class="row" style="margin-bottom:6px">
+      <label class="help">語速：</label>
+      <input id="rateRange" type="range" min="0.5" max="1.5" step="0.05" value="1">
+      <span id="rateLabel" class="help">1.00×</span>
+    </div>
+    <div class="row">
+      <button id="ttsPlayAll">朗讀全部</button>
+      <button id="ttsStop" class="secondary">停止</button>
+    </div>
+    <div class="help" style="margin-top:6px">對話：A/B 依你選擇的性別偏好自動分配；段落喇叭僅在「生成語音」後顯示。</div>
+  </div>
+
+  <!-- 沉浸閱讀遮罩 -->
+  <div id="immersiveLayer" class="immersive-layer" aria-hidden="true">
+    <div class="immersive-shell">
+      <div class="immersive-top">
+        <div>
+          <div class="label">沉浸閱讀模式</div>
+          <div class="small">僅保留閱讀區，按 Esc 或退出鍵返回</div>
+        </div>
+        <div class="reader-head-actions">
+          <button id="exitImmersive" class="secondary">退出</button>
+        </div>
+      </div>
+      <div id="immersiveHost" class="immersive-host"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
