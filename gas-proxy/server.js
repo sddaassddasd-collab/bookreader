@@ -1,20 +1,16 @@
 import express from "express";
 
 const app = express();
-// Allow larger JSON/text bodies so sync payload不會 413；Cloud Run 硬上限 32MB
-app.use(express.text({ type: "*/*", limit: "2mb" }));
-
-// GAS Web App exec URL（不含 query）
-const GAS_BASE =
-  "https://script.google.com/macros/s/AKfycbxSpXbJDyGXURmLeu-IBHBUjpaiRjJ4t4PbsgGA0QZq78-p4JzHdhcNOmRaKaKmt4bz7Q/exec";
 
 // 你的前端網域（GitHub Pages）
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "";
 // GAS token 放環境變數（不要放前端）
 const GAS_TOKEN = process.env.GAS_TOKEN || "";
+// GAS Web App exec URL（不含 query）
+const GAS_BASE =
+  "https://script.google.com/macros/s/AKfycbxSpXbJDyGXURmLeu-IBHBUjpaiRjJ4t4PbsgGA0QZq78-p4JzHdhcNOmRaKaKmt4bz7Q/exec";
 
-// CORS middleware
-app.use((req, res, next) => {
+function applyCors(res) {
   if (ALLOW_ORIGIN) {
     res.setHeader("Access-Control-Allow-Origin", ALLOW_ORIGIN);
   } else {
@@ -23,8 +19,16 @@ app.use((req, res, next) => {
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+// 先套 CORS，再做 body parser，避免 413 時沒帶 CORS 頭
+app.use((req, res, next) => {
+  applyCors(res);
   next();
 });
+
+// Allow larger JSON/text bodies so sync payload不會 413；Cloud Run 硬上限 32MB
+app.use(express.text({ type: "*/*", limit: "8mb" }));
 
 // Preflight
 app.options("/api/state", (req, res) => res.status(200).send("ok"));
@@ -58,6 +62,17 @@ app.all("/api/state", async (req, res) => {
     console.error(e);
     res.status(500).send(String(e));
   }
+});
+
+// 將 body parser 等錯誤也帶上 CORS，並避免吞掉 413
+// Express 會把 entity.too.large 丟進來
+app.use((err, req, res, next) => {
+  console.error(err);
+  if (!res.headersSent) applyCors(res);
+  if (err && err.type === "entity.too.large") {
+    return res.status(413).send("Payload too large");
+  }
+  res.status(500).send(String(err));
 });
 
 const port = process.env.PORT || 8080;
