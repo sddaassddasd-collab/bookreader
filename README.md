@@ -67,8 +67,8 @@
   function text(str){ return ContentService.createTextOutput(str); }
   function forbidden(){ return ContentService.createTextOutput('forbidden').setResponseCode(403); }
   ```
-- UI：同步區只需填同步 ID（雲端檔名 `<id>.json`），按「儲存設定」寫入 localStorage；按「立即同步」會先拉遠端再寫回；清空同步 ID 回到僅用本機。
-- 自動推送：儲存書格 (`儲存到書格`)、生字本寫入/匯入/扣分/備註等都會 debounce 後推送遠端。頁面載入時若已有同步 ID 會先嘗試拉取；失敗則維持本機資料。
+- UI：同步區只需填同步 ID（雲端檔名 `<id>.json`），按「儲存設定」寫入 localStorage；預設僅存本機，清空同步 ID 回到純本機。
+- 手動同步：程式內 `AUTO_REMOTE_SYNC_ENABLED=false`，所有儲存僅寫本機；按「立即同步」才會觸發雲端，流程為先拉遠端再上傳目前本機狀態。頁面載入時若已有同步 ID 仍會先嘗試拉取一次；失敗則維持本機資料。
 - 同步內容：`slots`、`activeSlotId`、以及當前語言的 `words`（同 `loadWords()`，payload 會附上 `lang` 與 `updatedAt`）。遠端檔案不存在時會自動建立。
 - 離線/失敗保護：所有資料仍保留在 localStorage，遠端錯誤只會顯示狀態，不會阻擋本機存取；按「停用遠端」可清除設定回純本機。
 

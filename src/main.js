@@ -19,6 +19,7 @@ const REMOTE_ENDPOINT = `${API_BASE}/api/state`;
 const REMOTE_ID_KEY = 'local-text-reader.remote.id';
 const LEGACY_REMOTE_EXEC_KEY = 'local-text-reader.remote.exec';
 const LEGACY_REMOTE_TOKEN_KEY = 'local-text-reader.remote.token';
+const AUTO_REMOTE_SYNC_ENABLED = false; // 僅在按「立即同步」時才上傳
 const REMOTE_DEBOUNCE_MS = 1000;
 
 /* ========= 字典開關（存本機 localStorage） ========= */
@@ -387,6 +388,7 @@ async function pushRemoteState(id = remoteId){
   return true;
 }
 function scheduleRemotePush(){
+  if(!AUTO_REMOTE_SYNC_ENABLED) return;
   if(!hasRemoteConfig()) return;
   clearTimeout(remotePushTimer);
   remotePushTimer = setTimeout(async ()=>{
@@ -426,7 +428,7 @@ function bindRemoteUI(){
   saveBtn?.addEventListener('click', ()=>{
     persistInputs();
     setStatus(hasRemoteConfig()
-      ? `已儲存同步設定（ID：${remoteId}）`
+      ? `已儲存同步設定（ID：${remoteId}，僅在按「立即同步」時上傳）`
       : '已停用遠端同步（僅用本機）');
   });
 
