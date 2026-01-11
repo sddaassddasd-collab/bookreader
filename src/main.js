@@ -719,6 +719,24 @@ function applyScrollProgress(el, ratio){
   if (max <= 0) return;
   requestAnimationFrame(()=>{ el.scrollTop = max * clamped; });
 }
+function restoreReaderProgress(ratio){
+  if(!reader) return;
+  const target = Math.min(Math.max(Number(ratio) || 0, 0), 1);
+  requestAnimationFrame(()=>{
+    if(useVirtualScroll) refreshAvgHeight();
+    applyScrollProgress(reader, target);
+    requestAnimationFrame(()=>{
+      handleVirtualScroll();
+      const actual = getScrollProgress(reader);
+      updateProgressUI(actual);
+      setSlotProgressInMap(activeSlotId, actual);
+    });
+  });
+}
+function captureProgressRestorer(){
+  const current = getScrollProgress(reader);
+  return ()=> restoreReaderProgress(current);
+}
 function updateProgressUI(ratio) {
   const value = Math.min(Math.max(Number(ratio) || 0, 0), 1);
   progressLabel.textContent = `進度 ${Math.round(value * 100)}%`;
@@ -753,6 +771,7 @@ function exitFullscreenIfAny(){
 }
 function enterImmersive(){
   if(isImmersive || !readerHome) return;
+  const restoreProgress = captureProgressRestorer();
   immersiveHost.appendChild(readerWrap);
   immersiveLayer.classList.add('show');
   immersiveLayer.setAttribute('aria-hidden','false');
@@ -761,9 +780,11 @@ function enterImmersive(){
   isImmersive = true;
   setStatus('已開啟沉浸模式');
   requestImmersiveFullscreen(immersiveLayer);
+  restoreProgress();
 }
 function exitImmersive(){
   if(!isImmersive || !readerHome) return;
+  const restoreProgress = captureProgressRestorer();
   const { parent, next } = readerHome;
   if(parent){
     if(next && next.parentNode === parent) parent.insertBefore(readerWrap, next);
@@ -776,6 +797,7 @@ function exitImmersive(){
   isImmersive = false;
   setStatus('已退出沉浸模式');
   exitFullscreenIfAny();
+  restoreProgress();
 }
 
 /* ========= TTS ========= */
