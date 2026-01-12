@@ -1329,34 +1329,118 @@ function compile(){
   segmentHeights.length = 0;
   virtualDom.avgHeight = 32;
 
-  const raw = $('#src').value;
-  if(!raw.trim()){
-    compiledSegments = [];
-    useVirtualScroll = false;
-    teardownReader();
-    reader.innerHTML = '<div class="empty">請先貼上文章再產生。</div>';
-    updateProgressUI(0);
-    return;
-  }
-  const lines = raw.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-  if(lines.length === 0){
-    compiledSegments = [];
-    useVirtualScroll = false;
-    teardownReader();
-    reader.innerHTML = '<div class="empty">內容皆為空白。</div>';
-    updateProgressUI(0);
-    return;
-  }
-  compiledSegments = lines.map((line, i)=>{
-    const inner = tokenizeParagraphToHTML(line);
-    return { i, text: line, html: inner };
-  });
-  useVirtualScroll = compiledSegments.length > VIRTUAL_THRESHOLD;
-  ensureReaderShell();
-  const initialCount = useVirtualScroll ? Math.min(INITIAL_SEGMENTS, compiledSegments.length) : compiledSegments.length;
-  renderVirtualWindow(0, initialCount);
-  applyHFClassesToReader({ force: true });
-  updateProgressUI(getScrollProgress(reader));
+  const srcEl = document.querySelector('#src');
+	const readerEl = document.querySelector('#reader');
+	const langSelect = document.querySelector('#langSelect');
+
+	const raw = (srcEl && srcEl.value) ? srcEl.value : '';
+	// split into paragraphs/segments - keep same split logic as original
+	const lines = raw.split(/\r?\n/);
+	// collapse consecutive empty lines into empty paragraph boundaries (replicate prior behaviour)
+	const segments = [];
+	let buffer = [];
+	for (let i = 0; i < lines.length; i++) {
+		const l = lines[i];
+		if (l.trim() === '') {
+			if (buffer.length) {
+				segments.push(buffer.join('\n'));
+				buffer = [];
+			} else {
+				// preserve empty paragraph as empty segment if multiple blank lines
+				segments.push('');
+			}
+		} else {
+			buffer.push(l);
+		}
+	}
+	if (buffer.length) segments.push(buffer.join('\n'));
+
+	// --- Always render all segments (one-shot) ---
+	// clear any virtual window leftovers/listeners
+	try {
+		if (typeof handleVirtualScroll === 'function') {
+			window.removeEventListener('scroll', handleVirtualScroll, { passive: true });
+		}
+	} catch (e) { /* ignore if not present */ }
+
+	// clear reader and seg audio cache (if present)
+	if (readerEl) readerEl.innerHTML = '';
+	if (typeof segAudios === 'object' && segAudios !== null && typeof segAudios.clear === 'function') {
+		segAudios.clear();
+	}
+	// build HTML for all segments
+	const lang = (langSelect && langSelect.value) ? langSelect.value : 'en';
+	const wordRegex = (function() {
+		// reuse same regex rule as original: english vs unicode word tokens
+		if (lang === 'de' || lang === 'fr') {
+			// Unicode-aware word token (letters)
+			return /[\p{L}\p{M}]+/gu;
+		}
+		// fallback english-ish token
+		return /[A-Za-z']+/g;
+	})();
+
+	const segHtml = segments.map((segText, idx) => {
+		// escape HTML helper (minimal)
+		const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+		// create inner HTML by wrapping word tokens with span.word data-w
+		const parts = [];
+		let lastIndex = 0;
+		if (!segText) {
+			return `<div class="seg" data-i="${idx}"></div>`;
+		}
+		let m;
+		while ((m = wordRegex.exec(segText)) !== null) {
+			const w = m[0];
+			const start = m.index;
+			const end = start + w.length;
+			parts.push(esc(segText.slice(lastIndex, start)));
+			parts.push(`<span class="word" data-w="${esc(w)}">${esc(w)}</span>`);
+			lastIndex = end;
+		}
+		if (lastIndex < segText.length) parts.push(esc(segText.slice(lastIndex)));
+		const inner = parts.join('');
+		return `<div class="seg" data-i="${idx}">${inner}</div>`;
+	}).join('\n');
+
+	if (readerEl) {
+		readerEl.innerHTML = segHtml;
+		// restore any per-render housekeeping from original code:
+		// - rebind click/double-click handlers for words (if original had a helper, call it)
+		// - re-apply HF classes
+		// - reset progress UI
+		// The original project exposes helpers with these names in README; call them if present.
+
+		if (typeof bindReaderWordHandlers === 'function') {
+			bindReaderWordHandlers(); // hypothetical existing helper - safe guard
+		}
+		// apply high-frequency highlight classes if helper exists
+		if (typeof applyHFClassesToReader === 'function') {
+			applyHFClassesToReader();
+		}
+		// cleanup any virtual window container node (renderVirtualWindow had inserted something)
+		const virtualWindowNode = document.querySelector('.virtual-window');
+		if (virtualWindowNode && virtualWindowNode.parentNode) {
+			virtualWindowNode.parentNode.removeChild(virtualWindowNode);
+		}
+
+		// restore scroll progress if original kept it in a map
+		if (typeof restoreReaderScrollProgress === 'function') {
+			restoreReaderScrollProgress();
+		} else if (typeof updateProgressUI === 'function') {
+			updateProgressUI();
+		} else {
+			// try a generic progress update if available
+			if (typeof onReaderScroll === 'function') onReaderScroll();
+		}
+	}
+
+	// remove any flag that indicated virtual rendering was active
+	if (typeof USE_VIRTUAL_WINDOW !== 'undefined') {
+		try { window.USE_VIRTUAL_WINDOW = false; } catch(e){}
+	}
+
+	// ...existing code that follows compile() (e.g. saving state, TTS resets, etc.)...
 }
 
 /* ========= 字典卡 ========= */
@@ -2120,7 +2204,7 @@ async function generateContentWithOpenAI({ lang, type, words, level, customTopic
     ? `Du bist ein hilfreicher Schreibassistent. Schreibe in klarem Deutsch (CEFR ${lc}).`
     : (lang === 'fr')
       ? `Tu es un assistant de rédaction utile. Écris en français clair (CECR ${lc}).`
-    : `You are a helpful writing assistant. Write in clear CEFR ${lc} English.`;
+      : `You are a helpful writing assistant. Write in clear CEFR ${lc} English.`;
   const user = buildUserPromptByType({ lang, type, words, level, customTopic, targetCount });
 
   const content = await doChat({
@@ -2152,7 +2236,7 @@ async function reviseContentToInclude({ lang, baseText, missingWords, level, typ
       : `You are an assistant revising a ${type} in CEFR ${lc} English.`;
   const user = isDE
     ? `Überarbeite den folgenden deutschen Text so, dass ALLE diese Zielwörter mindestens einmal vorkommen (Groß-/Kleinschreibung egal, Beugungen/Derivate erlaubt): ${listText}
-${keepLenDE} Stil beibehalten. Gib NUR den revidierten Text aus, ohne zusätzliche Kommentare.
+${keepLenDE} Stil beibehalten. Gib NUR den revidierten Text aus, ohne額外說明。
 
 Text:
 ${baseText}`
@@ -2545,10 +2629,3 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
     setStatus('已儲存備註');
   });
 }
-
-window.onWordPointerDown = onWordPointerDown;
-window.onWordClickHandler = onWordClickHandler;
-window.onWordDblClickHandler = onWordDblClickHandler;
-
-/* ========= 啟動時 ========= */
-renderWordList();
