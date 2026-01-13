@@ -837,9 +837,21 @@ function getScrollProgress(el){
 function applyScrollProgress(el, ratio){
   if(!el) return;
   const clamped = Math.min(Math.max(Number(ratio) || 0, 0), 1);
-  const max = el.scrollHeight - el.clientHeight;
-  if (max <= 0) return;
-  requestAnimationFrame(()=>{ el.scrollTop = max * clamped; });
+
+  let attempts = 0;
+  const maxAttempts = 8;
+  const tryApply = () => {
+    const max = el.scrollHeight - el.clientHeight;
+    if (max > 0 || attempts >= maxAttempts) {
+      requestAnimationFrame(()=> {
+        el.scrollTop = max > 0 ? Math.round(max * clamped) : 0;
+      });
+    } else {
+      attempts++;
+      requestAnimationFrame(tryApply);
+    }
+  };
+  tryApply();
 }
 function restoreReaderProgress(ratio){
   if(!reader) return;

@@ -64,11 +64,24 @@ export function getScrollProgress(el) {
 export function applyScrollProgress(el, ratio) {
   if (!el) return;
   const clamped = Math.min(Math.max(Number(ratio) || 0, 0), 1);
-  const max = el.scrollHeight - el.clientHeight;
-  if (max <= 0) return;
 
-  // 延後執行，等 DOM 高度算完
-  requestAnimationFrame(() => {
-    el.scrollTop = max * clamped;
-  });
+  // 反覆嘗試直到 el 的高度可用（避免在尚未渲染高度時 return）
+  let attempts = 0;
+  const maxAttempts = 8;
+
+  const tryApply = () => {
+    const max = el.scrollHeight - el.clientHeight;
+    if (max > 0 || attempts >= maxAttempts) {
+      // 在 next frame 設定 scrollTop，確保 layout 穩定
+      requestAnimationFrame(() => {
+        el.scrollTop = max > 0 ? Math.round(max * clamped) : 0;
+      });
+    } else {
+      attempts++;
+      // 等下一個 frame 再試一次
+      requestAnimationFrame(tryApply);
+    }
+  };
+
+  tryApply();
 }
