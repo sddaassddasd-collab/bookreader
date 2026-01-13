@@ -285,18 +285,18 @@ function setActiveSlot(id) {
   slotTitleInput.value = slot.title || `書本 ${slot.id}`;
   $('#src').value = slot.content || '';
 
+// 新增：在 compile 前鎖定，避免 compile 內的 onReaderScroll 覆蓋進度
+  isRestoringScroll = true;
+
 compile();
 
   // Try to restore by anchor (seg index + offset). If none, fallback to ratio.
   const anchor = getAnchorForSlot(slot.id);
   if (anchor) {
-    // 鎖定 scroll 寫入直到還原完成
-    isRestoringScroll = true;
     // restoreAnchorForSlot 內會在完成時解除鎖定並更新 progressMap/UI
     restoreAnchorForSlot(slot.id, anchor);
   } else {
     // 沒有 anchor 時立刻還原比例並確保不會被誤覆蓋
-    isRestoringScroll = true;
     applyScrollProgress(reader, progress);
     // 小延遲後解除鎖定並同步實際進度
     setTimeout(()=>{
