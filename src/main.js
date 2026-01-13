@@ -164,6 +164,34 @@ async function init() {
 /* ========= 書格（5 本） ========= */
 function bindSlotUI() {
   $('#saveSlot')?.addEventListener('click', saveActiveSlot);
+  // 新增：按鈕讀取儲存進度（不在 setActiveSlot 自動還原）
+  $('#loadProgress')?.addEventListener('click', async () => {
+    const slot = findSlot(activeSlotId);
+    if (!slot) return;
+    const savedProgress = getSlotProgressFromMap(slot.id);
+    const progress = savedProgress !== null ? savedProgress : (slot.progress || 0);
+
+    // 鎖定避免還原期間寫回 storage
+    isRestoringScroll = true;
+    setStatus(`正在從書格載入進度 ${Math.round(progress * 100)}%…`);
+
+    const anchor = getAnchorForSlot(slot.id);
+    if (anchor) {
+      // restoreAnchorForSlot 會在完成時解除 isRestoringScroll
+      restoreAnchorForSlot(slot.id, anchor);
+    } else {
+      // 使用 applyScrollProgress（會重試高度）並在稍後解除鎖定
+      applyScrollProgress(reader, progress);
+      setTimeout(() => {
+        const actual = getScrollProgress(reader);
+        updateProgressUI(actual);
+        setSlotProgressInMap(slot.id, actual);
+        isRestoringScroll = false;
+        setStatus(`已載入進度 ${Math.round(actual * 100)}%`);
+      }, 1000);
+    }
+  });
+
   $('#resetAllSlots')?.addEventListener('click', () => {
     if (!confirm('確定要清空五個書格的內容與進度嗎？此動作無法復原。')) return;
     for (let i = 1; i <= MAX_SLOTS; i += 1) {
@@ -285,27 +313,7 @@ function setActiveSlot(id) {
   slotTitleInput.value = slot.title || `書本 ${slot.id}`;
   $('#src').value = slot.content || '';
 
-// 新增：在 compile 前鎖定，避免 compile 內的 onReaderScroll 覆蓋進度
-  isRestoringScroll = true;
-
 compile();
-
-  // Try to restore by anchor (seg index + offset). If none, fallback to ratio.
-  const anchor = getAnchorForSlot(slot.id);
-  if (anchor) {
-    // restoreAnchorForSlot 內會在完成時解除鎖定並更新 progressMap/UI
-    restoreAnchorForSlot(slot.id, anchor);
-  } else {
-    // 沒有 anchor 時立刻還原比例並確保不會被誤覆蓋
-    applyScrollProgress(reader, progress);
-    // 小延遲後解除鎖定並同步實際進度
-    setTimeout(()=>{
-      const actual = getScrollProgress(reader);
-      updateProgressUI(actual);
-      setSlotProgressInMap(slot.id, actual);
-      isRestoringScroll = false;
-    }, 1000);
-  }
 
   updateProgressUI(progress);
   renderSlotBoard();
