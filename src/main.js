@@ -80,6 +80,9 @@ let remotePushTimer = null;
 let progressSaveHandle = null;
 let progressSaveTimer = null;
 
+// 新增：在還原期間暫時忽略 scroll 事件的寫入
+let isRestoringScroll = false;
+
 let currentAudio = null;
 let playQueue = [];
 let ttsGenerated = false;
@@ -185,6 +188,14 @@ function bindSlotUI() {
 }
 
 function onReaderScroll() {
+  // 如果正在還原，避免把初始 0% 覆蓋回 storage
+  if (isRestoringScroll) {
+    // 仍更新 progress bar 以免 UI 卡住，但不要寫入 map/storage
+    const ratio = getScrollProgress(reader);
+    updateProgressUI(ratio);
+    return;
+  }
+
   handleVirtualScroll();
   const ratio = getScrollProgress(reader);
   updateProgressUI(ratio);
@@ -274,15 +285,26 @@ function setActiveSlot(id) {
   slotTitleInput.value = slot.title || `書本 ${slot.id}`;
   $('#src').value = slot.content || '';
 
-  compile();
+compile();
 
   // Try to restore by anchor (seg index + offset). If none, fallback to ratio.
   const anchor = getAnchorForSlot(slot.id);
   if (anchor) {
-    // restoreAnchorForSlot will retry until DOM is ready
+    // 鎖定 scroll 寫入直到還原完成
+    isRestoringScroll = true;
+    // restoreAnchorForSlot 內會在完成時解除鎖定並更新 progressMap/UI
     restoreAnchorForSlot(slot.id, anchor);
   } else {
+    // 沒有 anchor 時立刻還原比例並確保不會被誤覆蓋
+    isRestoringScroll = true;
     applyScrollProgress(reader, progress);
+    // 小延遲後解除鎖定並同步實際進度
+    setTimeout(()=>{
+      const actual = getScrollProgress(reader);
+      updateProgressUI(actual);
+      setSlotProgressInMap(slot.id, actual);
+      isRestoringScroll = false;
+    }, 160);
   }
 
   updateProgressUI(progress);
@@ -390,6 +412,8 @@ function restoreAnchorForSlot(slotId, anchor){
         const actual = getScrollProgress(reader);
         updateProgressUI(actual);
         setSlotProgressInMap(clampId(slotId), actual);
+        // 解除還原鎖定，允許後續的捲動事件寫入進度
+        isRestoringScroll = false;
       });
     }
   }, interval);
