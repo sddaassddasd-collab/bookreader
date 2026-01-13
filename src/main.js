@@ -275,7 +275,16 @@ function setActiveSlot(id) {
   $('#src').value = slot.content || '';
 
   compile();
-  applyScrollProgress(reader, progress);
+
+  // Try to restore by anchor (seg index + offset). If none, fallback to ratio.
+  const anchor = getAnchorForSlot(slot.id);
+  if (anchor) {
+    // restoreAnchorForSlot will retry until DOM is ready
+    restoreAnchorForSlot(slot.id, anchor);
+  } else {
+    applyScrollProgress(reader, progress);
+  }
+
   updateProgressUI(progress);
   renderSlotBoard();
   setStatus(`已切換到書格 ${slot.id}`);
@@ -286,6 +295,9 @@ function saveActiveSlot() {
   const title = slotTitleInput.value.trim() || `書本 ${activeSlotId}`;
   const progress = getScrollProgress(reader);
 
+  // capture and persist anchor (seg index + offset) for more robust restore
+  saveScrollAnchor(activeSlotId);
+
   setSlotProgressInMap(activeSlotId, progress);
   slots = updateSlot(slots, activeSlotId, { content, title, progress });
   renderSlotBoard();
@@ -295,6 +307,92 @@ function saveActiveSlot() {
 
 function findSlot(id) {
   return slots.find((s) => s.id === clampId(id));
+}
+
+/* ========= 捲軸錨點（segment anchor） ========= */
+const ANCHOR_KEY = 'local-text-reader.anchor.v1';
+
+function loadAnchorMap(){
+  try{ return JSON.parse(localStorage.getItem(ANCHOR_KEY)) || {}; }catch{ return {}; }
+}
+function saveAnchorMap(m){
+  try{ localStorage.setItem(ANCHOR_KEY, JSON.stringify(m || {})); }catch{}
+}
+function getAnchorForSlot(id){
+  const map = loadAnchorMap();
+  return map[String(clampId(id))] || null;
+}
+function setAnchorForSlot(id, anchor){
+  const map = loadAnchorMap();
+  map[String(clampId(id))] = anchor;
+  saveAnchorMap(map);
+}
+function removeAnchorForSlot(id){
+  const map = loadAnchorMap();
+  delete map[String(clampId(id))];
+  saveAnchorMap(map);
+}
+
+// Capture first visible .seg and offset within it, then persist.
+function saveScrollAnchor(slotId){
+  if(!reader) return;
+  const segs = Array.from(reader.querySelectorAll('.seg'));
+  const top = reader.scrollTop;
+  let found = null;
+  for(const s of segs){
+    const off = s.offsetTop;
+    const h = s.offsetHeight || 1;
+    if(off + h > top){
+      found = { i: Number(s.dataset.i || 0), offset: Math.max(0, top - off) };
+      break;
+    }
+  }
+  // fallback: if no segs (empty), clear anchor
+  if(!found) {
+    removeAnchorForSlot(slotId);
+    return;
+  }
+  setAnchorForSlot(slotId, found);
+}
+
+// Try to restore an anchor; retry a few times while content is rendering.
+// anchor: { i: number, offset: number }
+function restoreAnchorForSlot(slotId, anchor){
+  if(!reader || !anchor) return;
+  let attempts = 0;
+  const maxAttempts = 20;
+  const interval = 80;
+  const tryOnce = () => {
+    attempts++;
+    // If using virtual scroll, compute approx top
+    if(useVirtualScroll && virtualDom && virtualDom.avgHeight){
+      const approxTop = Math.max(0, (anchor.i * virtualDom.avgHeight) + (anchor.offset || 0));
+      reader.scrollTo({ top: approxTop, behavior: 'auto' });
+      renderAroundIndex(anchor.i);
+      return true;
+    }
+    // non-virtual: find the segment element
+    const seg = reader.querySelector(`.seg[data-i="${anchor.i}"]`);
+    if(seg){
+      const targetTop = seg.offsetTop + (anchor.offset || 0);
+      reader.scrollTo({ top: targetTop, behavior: 'auto' });
+      return true;
+    }
+    return false;
+  };
+
+  const id = setInterval(()=>{
+    const ok = tryOnce();
+    if(ok || attempts >= maxAttempts){
+      clearInterval(id);
+      // after attempting, refresh progress UI to match actual
+      requestAnimationFrame(()=>{
+        const actual = getScrollProgress(reader);
+        updateProgressUI(actual);
+        setSlotProgressInMap(clampId(slotId), actual);
+      });
+    }
+  }, interval);
 }
 
 /* ========= 小工具 ========= */
