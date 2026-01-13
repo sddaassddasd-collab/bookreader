@@ -304,7 +304,7 @@ compile();
       updateProgressUI(actual);
       setSlotProgressInMap(slot.id, actual);
       isRestoringScroll = false;
-    }, 160);
+    }, 1000);
   }
 
   updateProgressUI(progress);
