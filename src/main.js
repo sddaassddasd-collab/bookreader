@@ -839,17 +839,24 @@ function applyScrollProgress(el, ratio){
   const clamped = Math.min(Math.max(Number(ratio) || 0, 0), 1);
 
   let attempts = 0;
-  const maxAttempts = 8;
+  const maxAttempts = 60; // 增加重試次數（約 1 秒）
   const tryApply = () => {
     const max = el.scrollHeight - el.clientHeight;
-    if (max > 0 || attempts >= maxAttempts) {
+    if (max > 0) {
+      // 在下一個 frame 真正設定 scrollTop，避免 layout 飛快變動時失敗
       requestAnimationFrame(()=> {
-        el.scrollTop = max > 0 ? Math.round(max * clamped) : 0;
+        el.scrollTop = Math.round(max * clamped);
       });
-    } else {
-      attempts++;
-      requestAnimationFrame(tryApply);
+      return;
     }
+    attempts++;
+    if (attempts >= maxAttempts) {
+      // 若超時仍沒高度，退回 0 並結束
+      requestAnimationFrame(()=> { el.scrollTop = 0; });
+      return;
+    }
+    // 再等一個 frame 繼續嘗試
+    requestAnimationFrame(tryApply);
   };
   tryApply();
 }
