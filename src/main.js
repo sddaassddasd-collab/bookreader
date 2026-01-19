@@ -1425,8 +1425,9 @@ function scrollToSegmentIndex(idx, behavior='smooth'){
   }
 }
 function syncPlayButtonsForRenderedSegments(){
-  if(!virtualDom.viewport) return;
-  Array.from(virtualDom.viewport.querySelectorAll('.seg')).forEach(seg=>{
+  const scope = reader || virtualDom.viewport;
+  if(!scope) return;
+  Array.from(scope.querySelectorAll('.seg')).forEach(seg=>{
     const idx = Number(seg.dataset.i);
     applyAudioButtonIfAny(seg, idx);
   });
@@ -1554,6 +1555,7 @@ function compile(){
 
 	if (readerEl) {
 		readerEl.innerHTML = segHtml;
+		readerEl.querySelectorAll('.seg').forEach(registerSegmentWords);
 		// restore any per-render housekeeping from original code:
 		// - rebind click/double-click handlers for words (if original had a helper, call it)
 		// - re-apply HF classes
