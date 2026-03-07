@@ -16,6 +16,7 @@ const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyo3LWQPC-XOdEmslQo
 /* ========= 遠端同步（Cloud Run Proxy） ========= */
 const API_BASE = 'https://gas-proxy-678824560367.asia-east1.run.app';
 const REMOTE_ENDPOINT = `${API_BASE}/api/state`;
+const CHAT_PROXY_ENDPOINT = `${API_BASE}/api/chat`;
 const REMOTE_ID_KEY = 'local-text-reader.remote.id';
 const LEGACY_REMOTE_EXEC_KEY = 'local-text-reader.remote.exec';
 const LEGACY_REMOTE_TOKEN_KEY = 'local-text-reader.remote.token';
@@ -2132,11 +2133,19 @@ async function doChat({ provider, apiKey, model, messages, temperature=0.7 }) {
     const key = apiKey || loadGrokKey();
     if(!key) throw new Error('請先填入 Grok API Key');
     const useModel = m || 'grok-4';
-    const resp = await fetch('https://api.x.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: useModel, messages, temperature })
-    });
+    let resp;
+    try{
+      resp = await fetch(CHAT_PROXY_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'grok', apiKey: key, model: useModel, messages, temperature })
+      });
+    }catch(err){
+      throw new Error(`Grok 連線失敗：${err.message}\n請確認代理服務可用：${CHAT_PROXY_ENDPOINT}`);
+    }
+    if(resp.status === 404){
+      throw new Error(`Grok 代理尚未部署 /api/chat（目前位址：${CHAT_PROXY_ENDPOINT}）。請更新並重新部署 gas-proxy。`);
+    }
     if(!resp.ok){
       const msg = await resp.text().catch(()=>resp.status);
       throw new Error('Grok 失敗：' + msg);

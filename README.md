@@ -52,13 +52,21 @@
 - 用途: 隱藏 GAS token，並提供跨網域同步入口。
 - 設定:
   - `gas-proxy/server.js` 更新 `GAS_BASE`。
-  - 環境變數: `GAS_TOKEN`（必填）、`ALLOW_ORIGIN`（建議 GitHub Pages 網域）、`PORT`（可選）。
+  - 環境變數:
+    - `GAS_TOKEN`（`/api/state` 必填）
+    - `ALLOW_ORIGIN`（建議設 GitHub Pages 網域）
+    - `OPENAI_API_KEY`（可選；供 `/api/chat` 代打 OpenAI）
+    - `GROK_API_KEY`（可選；供 `/api/chat` 代打 Grok）
+    - `PORT`（可選）
 - 本機啟動:
   ```bash
   cd gas-proxy
   npm install
   npm start
   ```
+- 路由:
+  - `GET/POST /api/state`：同步 JSON 到 GAS。
+  - `POST /api/chat`：代理 OpenAI/Grok chat completions（前端可帶 `provider/apiKey/model/messages/temperature`）。
 
 ## GAS Web App 範本（同步用）
 建立 Apps Script Web App 後，將 `TOKEN` 與 `FOLDER_ID` 改成自己的設定。
@@ -84,7 +92,9 @@ function forbidden(){ return ContentService.createTextOutput('forbidden').setRes
 - 英語查字成功時會以 `mode: 'no-cors'` 背景上傳; 失敗會進佇列並在 `online` 事件重送。
 
 ## 外部 API
-- Chat: OpenAI `https://api.openai.com/v1/chat/completions`（預設 `gpt-4o-mini`）/ Grok `https://api.x.ai/v1/chat/completions`（預設 `grok-4`）。
+- Chat:
+  - OpenAI：前端可直接呼叫 `https://api.openai.com/v1/chat/completions`（預設 `gpt-4o-mini`）。
+  - Grok：建議透過 `${API_BASE}/api/chat` 由 proxy 轉發到 `https://api.x.ai/v1/chat/completions`（預設 `grok-4`），避免瀏覽器 CORS 被擋。
 - TTS: OpenAI `https://api.openai.com/v1/audio/speech`（model `gpt-4o-mini-tts`）。
 
 ## 開發備註
