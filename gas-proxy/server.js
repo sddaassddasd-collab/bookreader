@@ -8,6 +8,8 @@ const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "";
 const GAS_TOKEN = process.env.GAS_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const GROK_API_KEY = process.env.GROK_API_KEY || "";
+const UDPIPE_ENDPOINT = "https://lindat.mff.cuni.cz/services/udpipe/api/process";
+const UDPIPE_DEFAULT_MODEL = "german-hdt-ud-2.12-230717";
 // GAS Web App exec URL（不含 query）
 const GAS_BASE =
   "https://script.google.com/macros/s/AKfycbxSpXbJDyGXURmLeu-IBHBUjpaiRjJ4t4PbsgGA0QZq78-p4JzHdhcNOmRaKaKmt4bz7Q/exec";
@@ -36,6 +38,7 @@ const jsonParser = express.json({ limit: "2MB" });
 // Preflight
 app.options("/api/state", (req, res) => res.status(200).send("ok"));
 app.options("/api/chat", (req, res) => res.status(200).send("ok"));
+app.options("/api/morph", (req, res) => res.status(200).send("ok"));
 
 // Proxy endpoint
 app.all("/api/state", stateBodyParser, async (req, res) => {
@@ -106,6 +109,50 @@ app.post("/api/chat", jsonParser, async (req, res) => {
     const text = await r.text();
     const ct = r.headers.get("content-type") || "application/json; charset=utf-8";
     res.status(r.status).setHeader("Content-Type", ct).send(text);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/morph", jsonParser, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const text = String(body.text || "").trim();
+    if (!text) {
+      return res.status(400).json({ error: "Missing text" });
+    }
+
+    const lang = String(body.lang || "de").toLowerCase();
+    const model = String(body.model || (lang === "de" ? UDPIPE_DEFAULT_MODEL : "")).trim();
+    if (!model) {
+      return res.status(400).json({ error: "Missing model" });
+    }
+
+    const params = new URLSearchParams();
+    params.set("tokenizer", "1");
+    params.set("tagger", "1");
+    params.set("parser", "1");
+    params.set("model", model);
+    params.set("data", text);
+
+    const r = await fetch(UDPIPE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: params.toString(),
+      redirect: "follow"
+    });
+
+    if (!r.ok) {
+      const msg = await r.text().catch(() => `HTTP ${r.status}`);
+      return res.status(r.status).json({ error: msg || `HTTP ${r.status}` });
+    }
+
+    const data = await r.json();
+    if (!data || typeof data.result !== "string") {
+      return res.status(502).json({ error: "Invalid UDPipe response" });
+    }
+    res.json({ model: data.model || model, result: data.result });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e) });

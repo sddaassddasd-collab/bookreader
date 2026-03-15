@@ -17,11 +17,16 @@ const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyo3LWQPC-XOdEmslQo
 const API_BASE = 'https://gas-proxy-678824560367.asia-east1.run.app';
 const REMOTE_ENDPOINT = `${API_BASE}/api/state`;
 const CHAT_PROXY_ENDPOINT = `${API_BASE}/api/chat`;
+const MORPH_PROXY_ENDPOINT = `${API_BASE}/api/morph`;
 const REMOTE_ID_KEY = 'local-text-reader.remote.id';
 const LEGACY_REMOTE_EXEC_KEY = 'local-text-reader.remote.exec';
 const LEGACY_REMOTE_TOKEN_KEY = 'local-text-reader.remote.token';
 const AUTO_REMOTE_SYNC_ENABLED = false; // 僅手動按「儲存」時才上傳
 const REMOTE_DEBOUNCE_MS = 1000;
+const UDPIPE_ENDPOINT = 'https://lindat.mff.cuni.cz/services/udpipe/api/process';
+const UDPIPE_MODEL_DE = 'german-hdt-ud-2.12-230717';
+const UDPIPE_TIMEOUT_MS = 12000;
+const GERMAN_MORPH_CACHE_MAX = 20;
 
 /* ========= 字典開關（存本機 localStorage） ========= */
 const DICT_OFF_KEY = 'word-noter.dict.off'; // '1' 表關、'0' 或缺值表開
@@ -43,6 +48,73 @@ const SRS_MASTERY_INTERVAL_DAYS = 90;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const VOICE_MALE = 'verse';
 const VOICE_FEMALE = 'alloy';
+const DE_SEPARABLE_PREFIXES = new Set([
+  'ab', 'an', 'auf', 'aus', 'bei', 'dar', 'ein', 'empor', 'entgegen', 'fest',
+  'fort', 'frei', 'gegenueber', 'gegenüber', 'her', 'hin', 'los', 'mit', 'nach',
+  'nieder', 'preis', 'statt', 'teil', 'um', 'unter', 'vor', 'weg', 'weiter',
+  'wieder', 'zurecht', 'zurueck', 'zurück', 'zusammen', 'zu'
+]);
+const DE_PRONOUN_HINTS = new Set([
+  'ich', 'du', 'er', 'sie', 'es', 'wir', 'ihr', 'man',
+  'mich', 'dich', 'ihn', 'uns', 'euch', 'ihnen'
+]);
+const DE_AUX_MODAL_HINTS = new Set([
+  'habe', 'hast', 'hat', 'haben', 'habt', 'hatte', 'hattest', 'hatten', 'hattet', 'gehabt',
+  'bin', 'bist', 'ist', 'sind', 'seid', 'war', 'warst', 'waren', 'wart', 'gewesen',
+  'werde', 'wirst', 'wird', 'werden', 'werdet', 'wurde', 'wurdest', 'wurden', 'wurdet', 'geworden',
+  'kann', 'kannst', 'koennen', 'können', 'koennt', 'könnt', 'konnte', 'konntest', 'konnten', 'konntet',
+  'will', 'willst', 'wollen', 'wollte', 'wolltest', 'wollten', 'wolltet',
+  'muss', 'musst', 'muessen', 'müssen', 'muesst', 'müsst', 'musste', 'musstest', 'mussten', 'musstet',
+  'soll', 'sollst', 'sollen', 'sollte', 'solltest', 'sollten', 'solltet',
+  'darf', 'darfst', 'duerfen', 'dürfen', 'duerft', 'dürft', 'durfte', 'durftest', 'durften', 'durftet',
+  'mag', 'magst', 'moegen', 'mögen', 'moegt', 'mögt', 'mochte', 'mochtest', 'mochten', 'mochtet',
+  'moechte', 'möchte', 'moechtest', 'möchtest', 'moechten', 'möchten', 'moechtet', 'möchtet'
+]);
+const DE_IRREGULAR_FORM_TO_LEMMA = new Map(Object.entries({
+  'bin': 'sein', 'bist': 'sein', 'ist': 'sein', 'sind': 'sein', 'seid': 'sein',
+  'war': 'sein', 'warst': 'sein', 'waren': 'sein', 'wart': 'sein', 'gewesen': 'sein',
+  'habe': 'haben', 'hast': 'haben', 'hat': 'haben', 'habt': 'haben', 'hatte': 'haben',
+  'hattest': 'haben', 'hatten': 'haben', 'hattet': 'haben', 'gehabt': 'haben',
+  'werde': 'werden', 'wirst': 'werden', 'wird': 'werden', 'werdet': 'werden',
+  'wurde': 'werden', 'wurdest': 'werden', 'wurden': 'werden', 'wurdet': 'werden', 'geworden': 'werden',
+  'kann': 'können', 'kannst': 'können', 'koennen': 'können', 'könnt': 'können',
+  'koennt': 'können', 'konnte': 'können', 'konntest': 'können', 'konnten': 'können', 'konntet': 'können',
+  'will': 'wollen', 'willst': 'wollen', 'wollte': 'wollen', 'wolltest': 'wollen',
+  'wollten': 'wollen', 'wolltet': 'wollen',
+  'muss': 'müssen', 'musst': 'müssen', 'muessen': 'müssen', 'muesst': 'müssen',
+  'müsst': 'müssen', 'musste': 'müssen', 'musstest': 'müssen', 'mussten': 'müssen', 'musstet': 'müssen',
+  'soll': 'sollen', 'sollst': 'sollen', 'sollte': 'sollen', 'solltest': 'sollen',
+  'sollten': 'sollen', 'solltet': 'sollen',
+  'darf': 'dürfen', 'darfst': 'dürfen', 'duerfen': 'dürfen', 'duerft': 'dürfen',
+  'dürft': 'dürfen', 'durfte': 'dürfen', 'durftest': 'dürfen', 'durften': 'dürfen', 'durftet': 'dürfen',
+  'mag': 'mögen', 'magst': 'mögen', 'moegen': 'mögen', 'moegt': 'mögen', 'mögt': 'mögen',
+  'mochte': 'mögen', 'mochtest': 'mögen', 'mochten': 'mögen', 'mochtet': 'mögen',
+  'moechte': 'mögen', 'möchte': 'mögen', 'moechtest': 'mögen', 'möchtest': 'mögen',
+  'moechten': 'mögen', 'möchten': 'mögen', 'moechtet': 'mögen', 'möchtet': 'mögen',
+  'tue': 'tun', 'tust': 'tun', 'tut': 'tun', 'tat': 'tun', 'tatest': 'tun', 'taten': 'tun', 'tatet': 'tun', 'getan': 'tun',
+  'weiss': 'wissen', 'weiß': 'wissen', 'weisst': 'wissen', 'weißt': 'wissen', 'wusste': 'wissen', 'wusstest': 'wissen', 'wussten': 'wissen', 'wusstet': 'wissen', 'gewusst': 'wissen',
+  'gehe': 'gehen', 'gehst': 'gehen', 'geht': 'gehen', 'ging': 'gehen', 'gingst': 'gehen', 'gingen': 'gehen', 'gingt': 'gehen', 'gegangen': 'gehen',
+  'komme': 'kommen', 'kommst': 'kommen', 'kommt': 'kommen', 'kam': 'kommen', 'kamst': 'kommen', 'kamen': 'kommen', 'kamt': 'kommen', 'gekommen': 'kommen',
+  'nehme': 'nehmen', 'nimmst': 'nehmen', 'nimmt': 'nehmen', 'nahm': 'nehmen', 'nahmst': 'nehmen', 'nahmen': 'nehmen', 'nahmt': 'nehmen', 'genommen': 'nehmen',
+  'gebe': 'geben', 'gibst': 'geben', 'gibt': 'geben', 'gab': 'geben', 'gabst': 'geben', 'gaben': 'geben', 'gabt': 'geben', 'gegeben': 'geben',
+  'sehe': 'sehen', 'siehst': 'sehen', 'sieht': 'sehen', 'sah': 'sehen', 'sahst': 'sehen', 'sahen': 'sehen', 'saht': 'sehen', 'gesehen': 'sehen',
+  'lese': 'lesen', 'liest': 'lesen', 'las': 'lesen', 'lasen': 'lesen', 'last': 'lesen', 'gelesen': 'lesen',
+  'fahre': 'fahren', 'fährst': 'fahren', 'fahrt': 'fahren', 'fährt': 'fahren', 'fuhr': 'fahren', 'fuhren': 'fahren', 'fuhrt': 'fahren', 'gefahren': 'fahren',
+  'stehe': 'stehen', 'stehst': 'stehen', 'steht': 'stehen', 'stand': 'stehen', 'standen': 'stehen', 'standet': 'stehen', 'gestanden': 'stehen',
+  'liege': 'liegen', 'liegst': 'liegen', 'liegt': 'liegen', 'lag': 'liegen', 'lagen': 'liegen', 'lagt': 'liegen', 'gelegen': 'liegen',
+  'sitze': 'sitzen', 'sitzt': 'sitzen', 'sass': 'sitzen', 'saß': 'sitzen', 'sassen': 'sitzen', 'saßen': 'sitzen', 'gesessen': 'sitzen',
+  'trage': 'tragen', 'trägst': 'tragen', 'trägt': 'tragen', 'trug': 'tragen', 'trugen': 'tragen', 'trugt': 'tragen', 'getragen': 'tragen',
+  'finde': 'finden', 'findest': 'finden', 'findet': 'finden', 'fand': 'finden', 'fanden': 'finden', 'fandet': 'finden', 'gefunden': 'finden',
+  'denke': 'denken', 'denkst': 'denken', 'denkt': 'denken', 'dachte': 'denken', 'dachtest': 'denken', 'dachten': 'denken', 'dachtet': 'denken', 'gedacht': 'denken',
+  'bringe': 'bringen', 'bringst': 'bringen', 'bringt': 'bringen', 'brachte': 'bringen', 'brachtest': 'bringen', 'brachten': 'bringen', 'brachtet': 'bringen', 'gebracht': 'bringen',
+  'spreche': 'sprechen', 'sprichst': 'sprechen', 'spricht': 'sprechen', 'sprach': 'sprechen', 'sprachen': 'sprechen', 'spracht': 'sprechen', 'gesprochen': 'sprechen',
+  'schreibe': 'schreiben', 'schreibst': 'schreiben', 'schreibt': 'schreiben', 'schrieb': 'schreiben', 'schrieben': 'schreiben', 'schriebt': 'schreiben', 'geschrieben': 'schreiben',
+  'bleibe': 'bleiben', 'bleibst': 'bleiben', 'bleibt': 'bleiben', 'blieb': 'bleiben', 'blieben': 'bleiben', 'bliebt': 'bleiben', 'geblieben': 'bleiben',
+  'helfe': 'helfen', 'hilfst': 'helfen', 'hilft': 'helfen', 'half': 'helfen', 'halfen': 'helfen', 'halft': 'helfen', 'geholfen': 'helfen',
+  'laufe': 'laufen', 'läufst': 'laufen', 'läuft': 'laufen', 'lief': 'laufen', 'liefen': 'laufen', 'lieft': 'laufen', 'gelaufen': 'laufen',
+  'schlafe': 'schlafen', 'schläfst': 'schlafen', 'schläft': 'schlafen', 'schlief': 'schlafen', 'schliefen': 'schlafen', 'geschlafen': 'schlafen',
+  'lasse': 'lassen', 'lässt': 'lassen', 'ließ': 'lassen', 'liess': 'lassen', 'ließen': 'lassen', 'liessen': 'lassen', 'gelassen': 'lassen'
+}));
 
 /* ========= DOM ========= */
 const $ = (s) => document.querySelector(s);
@@ -108,6 +180,9 @@ let wordsCacheKey = null;
 let wordsSaveTimer = null;
 let wordsSavePayload = null;
 let wordUiRenderScheduled = false;
+let activeCardWordKey = '';
+let germanMorphRunId = 0;
+const germanMorphCache = new Map();
 
 const INITIAL_SEGMENTS = 32;
 const MAX_RENDERED_SEGMENTS = 140;
@@ -453,6 +528,499 @@ function clampId(id){ const num = Number.isFinite(id)?id:1; return Math.min(Math
 function getLang(){ const el = document.getElementById('langSelect'); return el ? el.value : 'en'; }
 function _curStoreKey(){ return STORE_KEYS[getLang()] || STORE_KEYS.en; }
 function _curQueueKey(){ return QUEUE_KEYS[getLang()] || QUEUE_KEYS.en; }
+function escapeHtml(s){
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function escapeAttr(s){
+  return escapeHtml(s).replace(/"/g, '&quot;');
+}
+function setActiveCardWordContext(wordKey = ''){
+  activeCardWordKey = toLowerAlpha(wordKey || '');
+  if(card){
+    card.dataset.wordKey = activeCardWordKey;
+  }
+}
+function getActiveCardWordKey(){
+  return toLowerAlpha(card?.dataset?.wordKey || activeCardWordKey || '');
+}
+function getWordTokenRegex(lang = getLang()){
+  if(lang === 'de' || lang === 'fr'){
+    return /[\p{L}\p{M}]+/gu;
+  }
+  return /[A-Za-z]+(?:'[A-Za-z]+)?/g;
+}
+function normalizeLexemeKey(rawWord, lang = getLang()){
+  const raw = String(rawWord || '').trim();
+  if(!raw) return '';
+  if(lang === 'de'){
+    return normalizeGermanLexemeStandalone(raw);
+  }
+  return toLowerAlpha(raw);
+}
+function stripGermanZuPrefix(word){
+  const lower = toLowerAlpha(word);
+  return lower.startsWith('zu') && lower.length > 4 ? lower.slice(2) : lower;
+}
+function isLikelyGermanInfinitive(word){
+  const lower = toLowerAlpha(word);
+  return lower.length >= 4 && /(?:en|eln|ern)$/u.test(lower);
+}
+function buildGermanInfinitiveFromStem(stem){
+  const base = toLowerAlpha(stem).replace(/[^a-zäöüß]/giu, '');
+  if(!base) return '';
+  if(/(el|er)$/u.test(base)) return `${base}n`;
+  return `${base}en`;
+}
+function normalizeGermanParticipleTail(lower){
+  if(!lower) return '';
+  if(DE_IRREGULAR_FORM_TO_LEMMA.has(lower)) return DE_IRREGULAR_FORM_TO_LEMMA.get(lower);
+  const m = lower.match(/^ge([\p{L}\p{M}]+?)(et|t|en)$/u);
+  if(!m) return '';
+  const stem = m[1] || '';
+  const ending = m[2] || '';
+  if(!stem) return '';
+  if(ending === 'en') return `${stem}en`;
+  return buildGermanInfinitiveFromStem(stem);
+}
+function normalizeGermanJoinedSeparable(lower){
+  const prefixes = Array.from(DE_SEPARABLE_PREFIXES).sort((a,b)=> b.length - a.length);
+  for(const prefix of prefixes){
+    if(!lower.startsWith(prefix) || lower.length <= prefix.length + 2) continue;
+    const tail = lower.slice(prefix.length);
+    if(!tail) continue;
+    if(DE_IRREGULAR_FORM_TO_LEMMA.has(tail)){
+      return `${prefix}${DE_IRREGULAR_FORM_TO_LEMMA.get(tail)}`;
+    }
+    if(tail.startsWith('zu') && tail.length > 4){
+      const tailBase = normalizeGermanLexemeStandalone(tail.slice(2));
+      if(isLikelyGermanInfinitive(tailBase)){
+        return `${prefix}${tailBase}`;
+      }
+    }
+    if(tail.startsWith('ge')){
+      const tailBase = normalizeGermanParticipleTail(tail);
+      if(isLikelyGermanInfinitive(tailBase)){
+        return `${prefix}${tailBase}`;
+      }
+    }
+    if(isLikelyGermanInfinitive(tail)){
+      return `${prefix}${tail}`;
+    }
+  }
+  return '';
+}
+function normalizeGermanLexemeStandalone(rawWord){
+  const raw = String(rawWord || '');
+  const lower = toLowerAlpha(raw);
+  if(!lower) return '';
+  const startsUpper = /^[A-ZÄÖÜ]/u.test(raw);
+  if(!startsUpper && DE_IRREGULAR_FORM_TO_LEMMA.has(lower)){
+    return DE_IRREGULAR_FORM_TO_LEMMA.get(lower);
+  }
+  if(startsUpper && !isLikelyGermanInfinitive(lower)){
+    return lower;
+  }
+  const joined = normalizeGermanJoinedSeparable(lower);
+  if(joined) return joined;
+  const participleBase = normalizeGermanParticipleTail(lower);
+  if(participleBase && isLikelyGermanInfinitive(participleBase)){
+    return participleBase;
+  }
+  if(isLikelyGermanInfinitive(lower)){
+    return lower;
+  }
+  return lower;
+}
+function shouldTryGermanVerbHeuristic(items, idx){
+  const cur = items[idx];
+  if(!cur) return false;
+  const lower = cur.lower;
+  if(DE_IRREGULAR_FORM_TO_LEMMA.has(lower)) return true;
+  if(isLikelyGermanInfinitive(lower)) return true;
+  if(lower.startsWith('ge') && /(et|t|en)$/u.test(lower)) return true;
+  const prev = items[idx - 1]?.lower || '';
+  if(prev === 'zu' || DE_PRONOUN_HINTS.has(prev) || DE_AUX_MODAL_HINTS.has(prev)) return true;
+  if(cur.surface && /^[a-zäöüß]/u.test(cur.surface)) return true;
+  return idx === 0;
+}
+function deriveGermanVerbLemmaHeuristic(lower){
+  if(!lower) return '';
+  if(DE_IRREGULAR_FORM_TO_LEMMA.has(lower)){
+    return DE_IRREGULAR_FORM_TO_LEMMA.get(lower);
+  }
+  const participle = normalizeGermanParticipleTail(lower);
+  if(participle && isLikelyGermanInfinitive(participle)){
+    return participle;
+  }
+  const pastMatch = lower.match(/^([\p{L}\p{M}]{2,}?)(test|tet|ten|te)$/u);
+  if(pastMatch){
+    return buildGermanInfinitiveFromStem(pastMatch[1]);
+  }
+  const presentMatch = lower.match(/^([\p{L}\p{M}]{2,}?)(est|et|st|t|e)$/u);
+  if(presentMatch){
+    return buildGermanInfinitiveFromStem(presentMatch[1]);
+  }
+  return '';
+}
+function applyGermanSeparableVerbLinks(items, boundaries){
+  if(!items.length) return;
+  for(let i = items.length - 1; i >= 0; i -= 1){
+    const prefix = items[i].lower;
+    if(!DE_SEPARABLE_PREFIXES.has(prefix)) continue;
+
+    let clauseStart = i;
+    while(clauseStart > 0 && !boundaries[clauseStart - 1]) clauseStart -= 1;
+    let clauseEnd = i;
+    while(clauseEnd < items.length - 1 && !boundaries[clauseEnd]) clauseEnd += 1;
+    if(i !== clauseEnd) continue;
+
+    let verbIdx = -1;
+    for(let j = i - 1; j >= clauseStart && (i - j) <= 10; j -= 1){
+      const cand = items[j];
+      const lemma = stripGermanZuPrefix(cand.lexeme || cand.lower);
+      if(DE_SEPARABLE_PREFIXES.has(cand.lower)) continue;
+      if(DE_PRONOUN_HINTS.has(cand.lower)) continue;
+      if(isLikelyGermanInfinitive(lemma)){
+        verbIdx = j;
+        break;
+      }
+    }
+    if(verbIdx < 0) continue;
+    const baseLemma = stripGermanZuPrefix(items[verbIdx].lexeme || items[verbIdx].lower);
+    const combined = `${prefix}${baseLemma}`;
+    items[verbIdx].lexeme = combined;
+    items[i].lexeme = combined;
+  }
+}
+function analyzeGermanSegmentTokens(segmentText, tokens){
+  const items = tokens.map(t => {
+    const lower = toLowerAlpha(t.surface);
+    return {
+      ...t,
+      lower,
+      lexeme: normalizeGermanLexemeStandalone(lower)
+    };
+  });
+  if(!items.length) return items;
+
+  for(let i = 0; i < items.length; i += 1){
+    if(!shouldTryGermanVerbHeuristic(items, i)) continue;
+    const guess = deriveGermanVerbLemmaHeuristic(items[i].lower);
+    if(!guess) continue;
+    const normalizedGuess = normalizeGermanLexemeStandalone(guess);
+    if(normalizedGuess){
+      items[i].lexeme = normalizedGuess;
+    }
+  }
+
+  const boundaries = [];
+  for(let i = 0; i < items.length - 1; i += 1){
+    const between = segmentText.slice(items[i].end, items[i + 1].start);
+    boundaries[i] = /[.!?;:\n]/.test(between);
+  }
+  applyGermanSeparableVerbLinks(items, boundaries);
+  return items.map(item => ({
+    ...item,
+    lexeme: toLowerAlpha(item.lexeme || item.lower)
+  }));
+}
+function tokenizeTextToWordTokens(text, lang = getLang()){
+  const tokens = [];
+  const wordRegex = getWordTokenRegex(lang);
+  wordRegex.lastIndex = 0;
+  let m;
+  while((m = wordRegex.exec(text)) !== null){
+    tokens.push({
+      surface: m[0],
+      start: m.index,
+      end: m.index + m[0].length
+    });
+  }
+  return tokens;
+}
+function analyzeGermanLexemeSetFromText(text){
+  const rows = String(text || '').split(/\r?\n/);
+  const set = new Set();
+  rows.forEach((row)=>{
+    const tokens = tokenizeTextToWordTokens(row, 'de');
+    const analyzed = analyzeGermanSegmentTokens(row, tokens);
+    analyzed.forEach((t)=>{
+      const key = normalizeLexemeKey(t.lexeme || t.lower, 'de');
+      if(key) set.add(key);
+    });
+  });
+  return set;
+}
+function normalizeGermanMatchKey(text){
+  return toLowerAlpha(text || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-z]/g, '');
+}
+function parseUdpipeConllu(conllu){
+  const sentences = [];
+  let current = [];
+  const lines = String(conllu || '').split(/\r?\n/);
+  lines.forEach((line)=>{
+    const t = line.trim();
+    if(!t){
+      if(current.length){
+        sentences.push(current);
+        current = [];
+      }
+      return;
+    }
+    if(t.startsWith('#')) return;
+    const cols = line.split('\t');
+    if(cols.length < 8) return;
+    const idRaw = cols[0] || '';
+    if(idRaw.includes('-') || idRaw.includes('.')) return;
+    const id = Number(idRaw);
+    if(!Number.isFinite(id)) return;
+    current.push({
+      id,
+      form: cols[1] || '',
+      lemma: cols[2] || '',
+      upos: cols[3] || '',
+      xpos: cols[4] || '',
+      feats: cols[5] || '',
+      head: Number(cols[6]) || 0,
+      deprel: cols[7] || '',
+      deps: cols[8] || '',
+      misc: cols[9] || ''
+    });
+  });
+  if(current.length) sentences.push(current);
+  return sentences;
+}
+function deriveGermanLexemeFromUdToken(token){
+  if(!token) return '';
+  const lemmaRaw = toLowerAlpha(token.lemma || token.form || '');
+  let lexeme = normalizeLexemeKey(lemmaRaw, 'de');
+  const upos = (token.upos || '').toUpperCase();
+  if((upos === 'VERB' || upos === 'AUX') && !isLikelyGermanInfinitive(stripGermanZuPrefix(lexeme))){
+    const guess = deriveGermanVerbLemmaHeuristic(toLowerAlpha(token.form || ''));
+    if(guess) lexeme = normalizeLexemeKey(guess, 'de');
+  }
+  if(!lexeme) lexeme = normalizeLexemeKey(token.form || '', 'de');
+  return lexeme;
+}
+function finalizeGermanUdSentenceLexemes(sentenceTokens){
+  const out = (sentenceTokens || []).map(tok => ({
+    ...tok,
+    lexeme: deriveGermanLexemeFromUdToken(tok)
+  }));
+  const byId = new Map(out.map(tok => [tok.id, tok]));
+  out.forEach((tok)=>{
+    const dep = (tok.deprel || '').toLowerCase();
+    if(!dep.includes('compound:prt')) return;
+    const head = byId.get(tok.head);
+    if(!head) return;
+    const prefix = toLowerAlpha(tok.form || tok.lemma || '');
+    const headBase = stripGermanZuPrefix(head.lexeme || deriveGermanLexemeFromUdToken(head));
+    if(!DE_SEPARABLE_PREFIXES.has(prefix) || !isLikelyGermanInfinitive(headBase)) return;
+    const combined = `${prefix}${headBase}`;
+    tok.lexeme = combined;
+    head.lexeme = combined;
+  });
+  return out;
+}
+function flattenGermanUdWordTokens(sentences){
+  const out = [];
+  (sentences || []).forEach((sentence)=>{
+    const analyzed = finalizeGermanUdSentenceLexemes(sentence);
+    analyzed.forEach((tok)=>{
+      const isWord = /[\p{L}]/u.test(tok.form || '');
+      if(!isWord) return;
+      if(String(tok.upos || '').toUpperCase() === 'PUNCT') return;
+      out.push(tok);
+    });
+  });
+  return out;
+}
+function rememberGermanMorphCache(key, tokens){
+  germanMorphCache.set(key, tokens);
+  while(germanMorphCache.size > GERMAN_MORPH_CACHE_MAX){
+    const first = germanMorphCache.keys().next().value;
+    if(typeof first === 'undefined') break;
+    germanMorphCache.delete(first);
+  }
+}
+async function fetchGermanMorphConlluViaProxy(text){
+  const ac = new AbortController();
+  const timer = setTimeout(()=> ac.abort(), UDPIPE_TIMEOUT_MS);
+  try{
+    const resp = await fetch(MORPH_PROXY_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lang: 'de',
+        model: UDPIPE_MODEL_DE,
+        text: String(text || '')
+      }),
+      signal: ac.signal
+    });
+    if(!resp.ok){
+      const msg = await resp.text().catch(()=>`HTTP ${resp.status}`);
+      throw new Error(msg || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    if(!data || typeof data.result !== 'string'){
+      throw new Error('morph proxy invalid response');
+    }
+    return data.result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function fetchGermanMorphConlluDirect(text){
+  const ac = new AbortController();
+  const timer = setTimeout(()=> ac.abort(), UDPIPE_TIMEOUT_MS);
+  try{
+    const body = new URLSearchParams();
+    body.set('tokenizer', '1');
+    body.set('tagger', '1');
+    body.set('parser', '1');
+    body.set('model', UDPIPE_MODEL_DE);
+    body.set('data', String(text || ''));
+    const resp = await fetch(UDPIPE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: body.toString(),
+      signal: ac.signal
+    });
+    if(!resp.ok){
+      const msg = await resp.text().catch(()=>`HTTP ${resp.status}`);
+      throw new Error(msg || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    if(!data || typeof data.result !== 'string'){
+      throw new Error('udpipe invalid response');
+    }
+    return data.result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function fetchGermanMorphConllu(text){
+  try{
+    return await fetchGermanMorphConlluViaProxy(text);
+  }catch(proxyErr){
+    try{
+      return await fetchGermanMorphConlluDirect(text);
+    }catch(directErr){
+      throw new Error(`UDPipe unavailable: ${directErr.message || directErr} (proxy: ${proxyErr.message || proxyErr})`);
+    }
+  }
+}
+async function analyzeGermanMorphology(text){
+  const key = String(text || '').trim();
+  if(!key) return [];
+  if(germanMorphCache.has(key)){
+    return germanMorphCache.get(key) || [];
+  }
+  const conllu = await fetchGermanMorphConllu(key);
+  const tokens = flattenGermanUdWordTokens(parseUdpipeConllu(conllu));
+  rememberGermanMorphCache(key, tokens);
+  return tokens;
+}
+function refreshCompiledLexemeSetsFromReader(){
+  if(!reader || !compiledSegments.length) return;
+  const map = new Map();
+  compiledSegments.forEach(seg => map.set(seg.i, new Set()));
+  reader.querySelectorAll('.seg').forEach((segNode)=>{
+    const idx = Number(segNode.dataset.i || '-1');
+    const set = map.get(idx);
+    if(!set) return;
+    segNode.querySelectorAll('.word').forEach((node)=>{
+      const key = toLowerAlpha(node.dataset.k || node.dataset.w);
+      if(key) set.add(key);
+    });
+  });
+  compiledSegments.forEach((seg)=>{
+    const set = map.get(seg.i);
+    if(set) seg.lexemeSet = set;
+  });
+}
+function applyGermanMorphTokensToReader(tokens, runId){
+  if(runId !== germanMorphRunId) return;
+  if(!reader) return;
+  const nodes = Array.from(reader.querySelectorAll('.word'));
+  if(!nodes.length || !tokens.length) return;
+
+  let tokenIdx = 0;
+  for(let nodeIdx = 0; nodeIdx < nodes.length; nodeIdx += 1){
+    const node = nodes[nodeIdx];
+    const surface = node.dataset.w || node.textContent || '';
+    const nodeNorm = normalizeGermanMatchKey(surface);
+    let assigned = null;
+
+    while(tokenIdx < tokens.length){
+      const tok = tokens[tokenIdx];
+      const tokNorm = normalizeGermanMatchKey(tok.form || '');
+      if(!tokNorm){ tokenIdx += 1; continue; }
+      if(tokNorm === nodeNorm){
+        assigned = tok;
+        tokenIdx += 1;
+        break;
+      }
+      const nextTokNorm = normalizeGermanMatchKey(tokens[tokenIdx + 1]?.form || '');
+      if(nextTokNorm === nodeNorm){
+        tokenIdx += 1;
+        continue;
+      }
+      const nextNodeNorm = normalizeGermanMatchKey(nodes[nodeIdx + 1]?.dataset?.w || nodes[nodeIdx + 1]?.textContent || '');
+      if(nextNodeNorm && tokNorm === nextNodeNorm){
+        break;
+      }
+      if(tokNorm && nodeNorm && (tokNorm.includes(nodeNorm) || nodeNorm.includes(tokNorm))){
+        assigned = tok;
+        tokenIdx += 1;
+        break;
+      }
+      tokenIdx += 1;
+      if(tokenIdx - nodeIdx > 8) break;
+    }
+
+    const lexeme = normalizeLexemeKey(
+      assigned?.lexeme || assigned?.lemma || surface,
+      'de'
+    );
+    if(lexeme) node.dataset.k = lexeme;
+    if(assigned?.lemma) node.dataset.lemma = toLowerAlpha(assigned.lemma);
+    else delete node.dataset.lemma;
+    if(assigned?.upos) node.dataset.pos = assigned.upos;
+    else delete node.dataset.pos;
+    if(assigned?.feats && assigned.feats !== '_') node.dataset.morph = assigned.feats;
+    else delete node.dataset.morph;
+  }
+
+  clearWordNodeMap();
+  reader.querySelectorAll('.seg').forEach(registerSegmentWords);
+  refreshCompiledLexemeSetsFromReader();
+  applyHFClassesToReader({ force:true });
+}
+function queueGermanMorphAnalysis(text){
+  const raw = String(text || '').trim();
+  if(!raw) return;
+  const runId = ++germanMorphRunId;
+  setStatus('德文詞形分析中…');
+  analyzeGermanMorphology(raw)
+    .then((tokens)=>{
+      if(runId !== germanMorphRunId) return;
+      applyGermanMorphTokensToReader(tokens, runId);
+      setStatus(`德文詞形分析完成（${tokens.length} 詞）`);
+    })
+    .catch((err)=>{
+      if(runId !== germanMorphRunId) return;
+      console.error(err);
+      setStatus('德文詞形分析失敗，已使用本地規則');
+    });
+}
 
 function scheduleProgressSave(){
   if(typeof requestIdleCallback === 'function'){
@@ -506,7 +1074,7 @@ function applyHFClassToNode(node, key){
 }
 function registerWordNode(node){
   if(!node || !node.dataset) return;
-  const key = toLowerAlpha(node.dataset.w);
+  const key = toLowerAlpha(node.dataset.k || node.dataset.w);
   if(!key) return;
   let bucket = wordNodeMap.get(key);
   if(!bucket){ bucket = new Set(); wordNodeMap.set(key, bucket); }
@@ -516,7 +1084,7 @@ function registerWordNode(node){
 }
 function unregisterWordNode(node){
   if(!node || !node.dataset) return;
-  const key = toLowerAlpha(node.dataset.w);
+  const key = toLowerAlpha(node.dataset.k || node.dataset.w);
   const bucket = wordNodeMap.get(key);
   if(!bucket) return;
   bucket.delete(node);
@@ -1254,8 +1822,24 @@ function parseBooleanish(v){
 function normalizeSrsState(v){
   return (v === 'learning' || v === 'review' || v === 'new') ? v : 'new';
 }
-function normalizeWordEntry(entry = {}, fallbackWord = ''){
-  const key = toLowerAlpha(entry.word || fallbackWord);
+function normalizeWordAliases(entry = {}, fallbackWord = '', lang = getLang()){
+  const aliases = new Set();
+  const add = (raw)=>{
+    const key = normalizeLexemeKey(raw, lang);
+    const surface = toLowerAlpha(raw);
+    if(surface) aliases.add(surface);
+    if(key) aliases.add(key);
+  };
+  add(entry.word || '');
+  add(fallbackWord || '');
+  add(entry.display || '');
+  if(Array.isArray(entry.aliases)){
+    entry.aliases.forEach(add);
+  }
+  return Array.from(aliases).filter(Boolean);
+}
+function normalizeWordEntry(entry = {}, fallbackWord = '', lang = getLang()){
+  const key = normalizeLexemeKey(entry.word || fallbackWord, lang);
   if(!key) return null;
   const firstSeen = parseIsoOrFallback(entry.firstSeen, nowISO());
   const lastSeen = parseIsoOrFallback(entry.lastSeen, firstSeen);
@@ -1268,9 +1852,14 @@ function normalizeWordEntry(entry = {}, fallbackWord = ''){
   const srsState = srsStateRaw === 'new' && srsInterval > 0 ? 'review' : srsStateRaw;
   const isMastered = parseBooleanish(entry.isMastered);
   const masteredAt = isMastered ? parseIsoOrFallback(entry.masteredAt, lastSeen) : '';
+  const aliases = normalizeWordAliases(entry, fallbackWord, lang);
+  const display = lang === 'de'
+    ? key
+    : (entry.display || entry.word || fallbackWord || key);
   return {
     word: key,
-    display: entry.display || entry.word || fallbackWord || key,
+    display,
+    aliases,
     count,
     firstSeen,
     lastSeen,
@@ -1290,12 +1879,39 @@ function normalizeWordEntry(entry = {}, fallbackWord = ''){
 }
 function normalizeWordList(rows){
   if(!Array.isArray(rows)) return [];
-  const out = [];
+  const lang = getLang();
+  const merged = new Map();
   rows.forEach((row)=>{
-    const normalized = normalizeWordEntry(row, row?.word || '');
-    if(normalized) out.push(normalized);
+    const normalized = normalizeWordEntry(row, row?.word || '', lang);
+    if(!normalized) return;
+    const existed = merged.get(normalized.word);
+    if(!existed){
+      merged.set(normalized.word, normalized);
+      return;
+    }
+    const existedTs = Date.parse(existed.lastSeen || '') || 0;
+    const incomingTs = Date.parse(normalized.lastSeen || '') || 0;
+    const latest = incomingTs >= existedTs ? normalized : existed;
+    const firstTs = Math.min(Date.parse(existed.firstSeen || '') || Date.now(), Date.parse(normalized.firstSeen || '') || Date.now());
+    const lastTs = Math.max(existedTs, incomingTs);
+    merged.set(normalized.word, {
+      ...latest,
+      word: normalized.word,
+      count: Math.max(0, (existed.count || 0) + (normalized.count || 0)),
+      firstSeen: new Date(firstTs).toISOString(),
+      lastSeen: new Date(lastTs || Date.now()).toISOString(),
+      pos: latest.pos || existed.pos || normalized.pos || '',
+      phon: latest.phon || existed.phon || normalized.phon || '',
+      defs: Array.from(new Set([...(existed.defs || []), ...(normalized.defs || [])])).filter(Boolean).slice(0, 10),
+      note: latest.note || existed.note || normalized.note || '',
+      aliases: Array.from(new Set([...(existed.aliases || []), ...(normalized.aliases || [])])).filter(Boolean),
+      isMastered: Boolean(existed.isMastered || normalized.isMastered),
+      masteredAt: (existed.isMastered || normalized.isMastered)
+        ? (latest.masteredAt || existed.masteredAt || normalized.masteredAt || latest.lastSeen)
+        : ''
+    });
   });
-  return out;
+  return Array.from(merged.values());
 }
 function loadWords(){
   const key = _curStoreKey();
@@ -1366,33 +1982,46 @@ function scheduleWordUiRefresh(){
 }
 function upsertWord(word, payload = {}, inc = true){
   const base = loadWords();
-  const key = toLowerAlpha(word);
+  const lang = getLang();
+  const key = normalizeLexemeKey(word, lang);
+  if(!key) return;
   const now = nowISO();
   const idx = base.findIndex(x => x.word === key);
+  const incomingAliases = new Set();
+  if(Array.isArray(payload.aliases)){
+    payload.aliases.forEach(v => incomingAliases.add(toLowerAlpha(v)));
+  }
+  if(payload.display) incomingAliases.add(toLowerAlpha(payload.display));
+  incomingAliases.add(key);
   if (idx >= 0){
-    const row = normalizeWordEntry(base[idx], key);
+    const row = normalizeWordEntry(base[idx], key, lang);
     row.count = inc ? (row.count || 0) + 1 : (row.count || 0);
     row.lastSeen = now;
     row.pos = payload.pos ?? row.pos;
     row.phon = payload.phon ?? row.phon;
     row.defs = payload.defs ?? row.defs;
     row.note = payload.note ?? row.note;
-    row.display = payload.display ?? row.display;
+    if(payload.display && (payload.forceDisplay || !row.display || row.display === row.word)){
+      row.display = payload.display;
+    }
+    row.aliases = Array.from(new Set([...(row.aliases || []), ...incomingAliases])).filter(Boolean);
     base[idx] = row;
   } else {
     base.push(normalizeWordEntry({
-      word: key, display: payload.display || word,
+      word: key,
+      display: payload.display || (lang === 'de' ? key : word),
+      aliases: Array.from(incomingAliases),
       count: inc ? 1 : 0, firstSeen: now, lastSeen: now,
       pos: payload.pos || '', phon: payload.phon || '',
       defs: payload.defs || [], note: payload.note || ''
-    }, key));
+    }, key, lang));
   }
   saveWords(base);
   scheduleWordUiRefresh();
 }
 function adjustWordCount(word, delta){
   const base = loadWords();
-  const key = toLowerAlpha(word);
+  const key = normalizeLexemeKey(word, getLang());
   const idx = base.findIndex(x => x.word === key);
   if(idx < 0) return;
   const row = normalizeWordEntry(base[idx], key);
@@ -1404,7 +2033,7 @@ function adjustWordCount(word, delta){
 }
 function updateWordNote(word, note){
   const base = loadWords();
-  const key = toLowerAlpha(word);
+  const key = normalizeLexemeKey(word, getLang());
   const idx = base.findIndex(x => x.word === key);
   if(idx >= 0){
     const row = normalizeWordEntry(base[idx], key);
@@ -1417,7 +2046,7 @@ function updateWordNote(word, note){
 }
 function applySrsReview(word, rating = 'good'){
   const base = loadWords();
-  const key = toLowerAlpha(word);
+  const key = normalizeLexemeKey(word, getLang());
   const idx = base.findIndex(x => x.word === key);
   if(idx < 0) return;
 
@@ -1481,7 +2110,8 @@ function applySrsReview(word, rating = 'good'){
 }
 function getWord(word){
   const base = loadWords();
-  const row = base.find(x => x.word === toLowerAlpha(word));
+  const key = normalizeLexemeKey(word, getLang());
+  const row = base.find(x => x.word === key);
   return row ? normalizeWordEntry(row, row.word) : null;
 }
 
@@ -1655,14 +2285,23 @@ function syncPlayButtonsForRenderedSegments(){
   });
 }
 function getWordNodes(word){
-  const set = wordNodeMap.get(word);
+  const key = normalizeLexemeKey(word, getLang());
+  const set = wordNodeMap.get(key);
   return set ? Array.from(set) : [];
 }
 function findFirstSegmentIndexForWord(word){
-  const key = toLowerAlpha(word);
-  const re = buildVariantPattern(key) || new RegExp('\\b' + escapeRegExp(key) + '\\b', 'i');
+  const key = normalizeLexemeKey(word, getLang());
+  if(!key) return -1;
+  const isGerman = getLang() === 'de';
+  const re = isGerman
+    ? new RegExp('\\b' + escapeRegExp(key) + '\\b', 'iu')
+    : (buildVariantPattern(key) || new RegExp('\\b' + escapeRegExp(key) + '\\b', 'i'));
   for(const seg of compiledSegments){
-    if(re.test(seg.text)) return seg.i;
+    if(isGerman){
+      if(seg.lexemeSet?.has(key) || re.test(seg.text)) return seg.i;
+    }else if(re && re.test(seg.text)){
+      return seg.i;
+    }
   }
   return -1;
 }
@@ -1670,24 +2309,23 @@ function findFirstSegmentIndexForWord(word){
 /* ========= 文章處理 ========= */
 function tokenizeParagraphToHTML(textLine){
   const lang = getLang();
-  const WORD = lang === 'en'
-    ? /[A-Za-z]+(?:'[A-Za-z]+)?/g
-    : /[\p{L}]+(?:-[\p{L}]+)*(?:'[\p{L}]+)?/gu;
-
+  const tokens = tokenizeTextToWordTokens(textLine, lang);
+  const analyzed = lang === 'de'
+    ? analyzeGermanSegmentTokens(textLine, tokens)
+    : tokens.map(t => ({ ...t, lexeme: normalizeLexemeKey(t.surface, lang) }));
   const out = [];
-  let last = 0, m;
-  while ((m = WORD.exec(textLine)) !== null){
-    if(m.index > last){
-      const mid = textLine.slice(last, m.index)
-        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      out.push(mid);
+  let last = 0;
+  tokens.forEach((tok, idx)=>{
+    if(tok.start > last){
+      out.push(escapeHtml(textLine.slice(last, tok.start)));
     }
-    const tok = m[0];
-    out.push(`<span class="word" data-w="${tok}">${tok}</span>`);
-    last = WORD.lastIndex;
-  }
+    const lexeme = toLowerAlpha(analyzed[idx]?.lexeme || tok.surface);
+    const surfaceEsc = escapeHtml(tok.surface);
+    out.push(`<span class="word" data-w="${escapeAttr(tok.surface)}" data-k="${escapeAttr(lexeme)}">${surfaceEsc}</span>`);
+    last = tok.end;
+  });
   if(last < textLine.length){
-    out.push(textLine.slice(last).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));
+    out.push(escapeHtml(textLine.slice(last)));
   }
   return out.join('');
 }
@@ -1696,163 +2334,136 @@ function compile(){
   ttsGenerated = false;
   segAudios.clear();
   ttsDrawer.classList.remove('show');
+  setActiveCardWordContext('');
   deductedWords.clear();
   clearWordNodeMap();
   segmentHeights.length = 0;
   virtualDom.avgHeight = 32;
 
   const srcEl = document.querySelector('#src');
-	const readerEl = document.querySelector('#reader');
-	const langSelect = document.querySelector('#langSelect');
+  const readerEl = document.querySelector('#reader');
+  const langSelect = document.querySelector('#langSelect');
+  const raw = (srcEl && srcEl.value) ? srcEl.value : '';
+  const lang = (langSelect && langSelect.value) ? langSelect.value : 'en';
 
-	const raw = (srcEl && srcEl.value) ? srcEl.value : '';
-	// split into paragraphs/segments - keep same split logic as original
-	const lines = raw.split(/\r?\n/);
-	// collapse consecutive empty lines into empty paragraph boundaries (replicate prior behaviour)
-	const segments = [];
-	let buffer = [];
-	for (let i = 0; i < lines.length; i++) {
-		const l = lines[i];
-		if (l.trim() === '') {
-			if (buffer.length) {
-				segments.push(buffer.join('\n'));
-				buffer = [];
-			} else {
-				// preserve empty paragraph as empty segment if multiple blank lines
-				segments.push('');
-			}
-		} else {
-			buffer.push(l);
-		}
-	}
-	if (buffer.length) segments.push(buffer.join('\n'));
+  const lines = raw.split(/\r?\n/);
+  const segments = [];
+  let buffer = [];
+  for(let i = 0; i < lines.length; i += 1){
+    const line = lines[i];
+    if(line.trim() === ''){
+      if(buffer.length){
+        segments.push(buffer.join('\n'));
+        buffer = [];
+      }else{
+        segments.push('');
+      }
+    }else{
+      buffer.push(line);
+    }
+  }
+  if(buffer.length) segments.push(buffer.join('\n'));
 
-	// --- Always render all segments (one-shot) ---
-	// clear any virtual window leftovers/listeners
-	try {
-		if (typeof handleVirtualScroll === 'function') {
-			window.removeEventListener('scroll', handleVirtualScroll, { passive: true });
-		}
-	} catch (e) { /* ignore if not present */ }
+  compiledSegments = segments.map((segText, idx)=>{
+    if(!segText){
+      return { i: idx, text: '', html: '', lexemeSet: new Set() };
+    }
+    const tokens = tokenizeTextToWordTokens(segText, lang);
+    const analyzed = lang === 'de'
+      ? analyzeGermanSegmentTokens(segText, tokens)
+      : tokens.map(t => ({ ...t, lexeme: normalizeLexemeKey(t.surface, lang) }));
+    const parts = [];
+    const lexemeSet = new Set();
+    let last = 0;
+    tokens.forEach((tok, tIdx)=>{
+      if(tok.start > last){
+        parts.push(escapeHtml(segText.slice(last, tok.start)));
+      }
+      const lexeme = toLowerAlpha(analyzed[tIdx]?.lexeme || normalizeLexemeKey(tok.surface, lang));
+      if(lexeme) lexemeSet.add(lexeme);
+      parts.push(
+        `<span class="word" data-w="${escapeAttr(tok.surface)}" data-k="${escapeAttr(lexeme)}">${escapeHtml(tok.surface)}</span>`
+      );
+      last = tok.end;
+    });
+    if(last < segText.length){
+      parts.push(escapeHtml(segText.slice(last)));
+    }
+    return {
+      i: idx,
+      text: segText,
+      html: parts.join(''),
+      lexemeSet
+    };
+  });
 
-	// clear reader and seg audio cache (if present)
-	if (readerEl) readerEl.innerHTML = '';
-	if (typeof segAudios === 'object' && segAudios !== null && typeof segAudios.clear === 'function') {
-		segAudios.clear();
-	}
-	// build HTML for all segments
-	const lang = (langSelect && langSelect.value) ? langSelect.value : 'en';
-	const wordRegex = (function() {
-		// reuse same regex rule as original: english vs unicode word tokens
-		if (lang === 'de' || lang === 'fr') {
-			// Unicode-aware word token (letters)
-			return /[\p{L}\p{M}]+/gu;
-		}
-		// fallback english-ish token
-		return /[A-Za-z']+/g;
-	})();
-
-	const segHtml = segments.map((segText, idx) => {
-		// escape HTML helper (minimal)
-		const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-		// create inner HTML by wrapping word tokens with span.word data-w
-		const parts = [];
-		let lastIndex = 0;
-		if (!segText) {
-			return `<div class="seg" data-i="${idx}"></div>`;
-		}
-		let m;
-		while ((m = wordRegex.exec(segText)) !== null) {
-			const w = m[0];
-			const start = m.index;
-			const end = start + w.length;
-			parts.push(esc(segText.slice(lastIndex, start)));
-			parts.push(`<span class="word" data-w="${esc(w)}">${esc(w)}</span>`);
-			lastIndex = end;
-		}
-		if (lastIndex < segText.length) parts.push(esc(segText.slice(lastIndex)));
-		const inner = parts.join('');
-		return `<div class="seg" data-i="${idx}">${inner}</div>`;
-	}).join('\n');
-
-	if (readerEl) {
-		readerEl.innerHTML = segHtml;
-		readerEl.querySelectorAll('.seg').forEach(registerSegmentWords);
-		// restore any per-render housekeeping from original code:
-		// - rebind click/double-click handlers for words (if original had a helper, call it)
-		// - re-apply HF classes
-		// - reset progress UI
-		// The original project exposes helpers with these names in README; call them if present.
-
-		if (typeof bindReaderWordHandlers === 'function') {
-			bindReaderWordHandlers(); // hypothetical existing helper - safe guard
-		}
-		// apply high-frequency highlight classes if helper exists
-		if (typeof applyHFClassesToReader === 'function') {
-			applyHFClassesToReader();
-		}
-		// cleanup any virtual window container node (renderVirtualWindow had inserted something)
-		const virtualWindowNode = document.querySelector('.virtual-window');
-		if (virtualWindowNode && virtualWindowNode.parentNode) {
-			virtualWindowNode.parentNode.removeChild(virtualWindowNode);
-		}
-
-		// restore scroll progress if original kept it in a map
-		if (typeof restoreReaderScrollProgress === 'function') {
-			restoreReaderScrollProgress();
-		} else if (typeof updateProgressUI === 'function') {
-			updateProgressUI();
-		} else {
-			// try a generic progress update if available
-			if (typeof onReaderScroll === 'function') onReaderScroll();
-		}
-	}
-
-	// remove any flag that indicated virtual rendering was active
-	if (typeof USE_VIRTUAL_WINDOW !== 'undefined') {
-		try { window.USE_VIRTUAL_WINDOW = false; } catch(e){}
-	}
-
-	// ...existing code that follows compile() (e.g. saving state, TTS resets, etc.)...
+  useVirtualScroll = false;
+  if(readerEl){
+    readerEl.innerHTML = compiledSegments
+      .map(seg => `<div class="seg" data-i="${seg.i}">${seg.html}</div>`)
+      .join('\n');
+    readerEl.querySelectorAll('.seg').forEach(registerSegmentWords);
+  }
+  applyHFClassesToReader({ force:true });
+  if(typeof onReaderScroll === 'function') onReaderScroll();
+  if(lang === 'de' && raw.trim()){
+    queueGermanMorphAnalysis(raw);
+  }else{
+    germanMorphRunId += 1; // cancel previous german async run
+  }
 }
 
 /* ========= 字典卡 ========= */
-function showWordCardSkeleton(display, word){
+function showWordCardSkeleton(display, wordKey){
+  const key = normalizeLexemeKey(wordKey, getLang());
   card.style.display = 'block';
+  setActiveCardWordContext(key);
   resetWordQ();
+  const isDE = getLang() === 'de';
+  const showLemma = isDE && key && toLowerAlpha(display) !== key;
   cardTitle.innerHTML =
-    `<span class="badge">查詢</span> <strong style="font-size:18px">${display}</strong>`;
-  cardMeta.textContent = '';
+    `<span class="badge">查詢</span> <strong style="font-size:18px">${display}</strong>` +
+    (showLemma ? `<span class="help" style="margin-left:8px">原型：${key}</span>` : '');
+  cardMeta.textContent = isDE && key ? `詞元：${key}` : '';
   offlineTip.style.display = 'none';
   defsBox.innerHTML = `<li style="color:#94a3b8">載入中⋯</li>`;
 }
-function updateWordCardFromInfo(display, word, info){
+function updateWordCardFromInfo(display, wordKey, info){
+  const key = normalizeLexemeKey(wordKey, getLang());
+  setActiveCardWordContext(key);
   if(!info){
     defsBox.innerHTML = `<li>（離線或查無結果，請自行補充備註作為臨時解釋。）</li>`;
     offlineTip.style.display = 'block';
     return;
   }
+  const isDE = getLang() === 'de';
+  const showLemma = isDE && key && toLowerAlpha(display) !== key;
   cardTitle.innerHTML =
     `<span class="badge">查詢</span> <strong style="font-size:18px">${display}</strong>` +
+    (showLemma ? `<span class="help" style="margin-left:8px">原型：${key}</span>` : '') +
     (info?.phon ? `<span class="phon">/${info.phon}/</span>` : '');
-  cardMeta.textContent = info?.pos ? `詞性：${info.pos}` : '';
+  cardMeta.textContent = info?.pos
+    ? `詞性：${info.pos}${isDE && key ? ` · 詞元：${key}` : ''}`
+    : (isDE && key ? `詞元：${key}` : '');
   defsBox.innerHTML = '';
   (info.defs||[]).slice(0,5).forEach(d=>{
     const li = document.createElement('li');
     li.innerHTML = d;
     defsBox.appendChild(li);
   });
-  upsertWord(word, {
-    display,
+  upsertWord(key, {
+    display: isDE ? key : display,
+    aliases: [display],
     pos: info.pos || '',
     phon: info.phon || '',
     defs: info.defs ? info.defs.slice(0,3) : []
   }, false);
   if(getLang() === 'en'){
-    const row = getWord(word);
+    const row = getWord(key);
+    if(!row) return;
     postToSheet({
       lang: getLang(),
-      word: row.word, display: row.display||word, pos: row.pos||'', phon: row.phon||'',
+      word: row.word, display: row.display||key, pos: row.pos||'', phon: row.phon||'',
       defs: row.defs||[], note: row.note||'', count: row.count||1,
       pageUrl: location.href, userAgent: navigator.userAgent
     });
@@ -2040,7 +2651,7 @@ function handleReaderDblClick(e){
   onWordDblClickHandler(target);
 }
 function setWordDeductedVisual(word, on){
-  const key = toLowerAlpha(word);
+  const key = normalizeLexemeKey(word, getLang());
   const nodes = getWordNodes(key);
   if(on){
     deductedWords.add(key);
@@ -2056,7 +2667,9 @@ function setWordDeductedVisual(word, on){
 }
 async function processSingleClick(el){
   const display = el.dataset.w;
-  const word = toLowerAlpha(display);
+  const lang = getLang();
+  const word = toLowerAlpha(el.dataset.k || normalizeLexemeKey(display, lang));
+  if(!word) return;
   const mode = getWordSelectionMode();
   const shouldCount = mode === WORD_MODE_COUNT;
   const nodes = getWordNodes(word);
@@ -2067,7 +2680,10 @@ async function processSingleClick(el){
     return;
   }
   if(isDictOff()){
-    upsertWord(word, { display }, shouldCount);
+    upsertWord(word, {
+      display: lang === 'de' ? word : display,
+      aliases: [display]
+    }, shouldCount);
     if(mode === WORD_MODE_SRS){
       applySrsReview(word, 'again');
       setWordDeductedVisual(word, true);
@@ -2076,7 +2692,10 @@ async function processSingleClick(el){
   }
 
   showWordCardSkeleton(display, word);
-  upsertWord(word, { display }, shouldCount);
+  upsertWord(word, {
+    display: lang === 'de' ? word : display,
+    aliases: [display]
+  }, shouldCount);
   if(mode === WORD_MODE_SRS){
     applySrsReview(word, 'again');
     setWordDeductedVisual(word, true);
@@ -2115,7 +2734,7 @@ async function processSingleClick(el){
       moreBtn.onclick = async ()=>{
         try{
           moreBtn.disabled = true; moreBtn.textContent='生成中…';
-          const extra = await generateGermanMore(display);
+          const extra = await generateGermanMore(word);
           moreBox.innerHTML = `
 <div style="border-top:1px solid var(--border); margin-top:8px; padding-top:8px">
   ${extra.more.replace(/\n/g,'<br>')}
@@ -2138,9 +2757,14 @@ async function processSingleClick(el){
 }
 function processDoubleClick(el){
   const display = el.dataset.w;
-  const word = toLowerAlpha(display);
+  const lang = getLang();
+  const word = toLowerAlpha(el.dataset.k || normalizeLexemeKey(display, lang));
+  if(!word) return;
   if(getWordSelectionMode() === WORD_MODE_SRS){
-    upsertWord(word, { display }, false);
+    upsertWord(word, {
+      display: lang === 'de' ? word : display,
+      aliases: [display]
+    }, false);
     applySrsReview(word, 'good');
     setWordDeductedVisual(word, false);
   }else{
@@ -2171,7 +2795,11 @@ function renderWordList(){
     .slice()
     .sort((a,b)=> (b.lastSeen||'').localeCompare(a.lastSeen||''));
   const list = q ? all.filter(x =>
-        x.word.includes(q) || (x.note||'').toLowerCase().includes(q) ) : all;
+        x.word.includes(q)
+        || (x.display || '').toLowerCase().includes(q)
+        || (Array.isArray(x.aliases) && x.aliases.some(a => String(a || '').toLowerCase().includes(q)))
+        || (x.note||'').toLowerCase().includes(q)
+      ) : all;
 
   if(!list.length){
     box.innerHTML = '<div class="empty">目前沒有生字。</div>';
@@ -2206,7 +2834,8 @@ function renderWordList(){
   }).join('');
 }
 window.focusWord = async function(word){
-  const key = toLowerAlpha(word);
+  const key = normalizeLexemeKey(word, getLang());
+  if(!key) return;
   let nodes = getWordNodes(key);
   let targetSegIdx = null;
   if(!nodes.length && compiledSegments.length){
@@ -2234,20 +2863,29 @@ window.focusWord = async function(word){
     setTimeout(animateNode, 120);
   }
 
-  const x = getWord(word);
+  const x = getWord(key);
   if(!x) return;
 
   card.style.display = 'block';
+  setActiveCardWordContext(x.word);
+  const isDE = getLang() === 'de';
   cardTitle.innerHTML = `<span class="badge">查詢</span> <strong style="font-size:18px">${x.display || x.word}</strong>` +
+                        (isDE ? `<span class="help" style="margin-left:8px">原型：${x.word}</span>` : '') +
                         (x.phon ? `<span class="phon">/${x.phon}/</span>` : '');
-  cardMeta.textContent = x.pos ? `詞性：${x.pos}` : '';
+  cardMeta.textContent = x.pos
+    ? `詞性：${x.pos}${isDE ? ` · 詞元：${x.word}` : ''}`
+    : (isDE ? `詞元：${x.word}` : '');
   resetWordQ();
   if(x.defs?.length){
     defsBox.innerHTML = x.defs.map(d=>`<li>${d}</li>`).join('');
   } else {
-    const info = await lookupDefinition(word);
+    const info = await lookupDefinition(key);
     if(info){
-      upsertWord(word, info, false);
+      upsertWord(key, {
+        ...info,
+        display: isDE ? key : (x.display || key),
+        aliases: x.aliases || []
+      }, false);
       defsBox.innerHTML = info.defs.map(d=>`<li>${d}</li>`).join('');
     } else {
       defsBox.innerHTML = '<li>（查無定義）</li>';
@@ -2289,14 +2927,22 @@ function importJSONFile(file){
     try{
       const data = JSON.parse(reader.result);
       if(!Array.isArray(data)) throw new Error('格式錯誤');
+      const lang = getLang();
       const cur = loadWords();
-      const map = new Map(cur.map(x=>[x.word,x]));
+      const map = new Map(cur.map(x=>[normalizeLexemeKey(x.word, lang), x]));
       data.forEach(x=>{
-        const k = x.word;
+        const k = normalizeLexemeKey(x?.word || x?.display || '', lang);
+        if(!k) return;
+        const incoming = normalizeWordEntry({ ...x, word: k }, k, lang);
+        if(!incoming) return;
         const exists = map.get(k);
-        if(!exists){ map.set(k,x); }
+        if(!exists){ map.set(k, incoming); }
         else{
-          map.set(k, (new Date(x.lastSeen||0) > new Date(exists.lastSeen||0)) ? {...exists,...x} : {...x,...exists});
+          const newer = (new Date(incoming.lastSeen||0) > new Date(exists.lastSeen||0))
+            ? { ...exists, ...incoming }
+            : { ...incoming, ...exists };
+          newer.aliases = Array.from(new Set([...(exists.aliases || []), ...(incoming.aliases || [])])).filter(Boolean);
+          map.set(k, normalizeWordEntry(newer, k, lang));
         }
       });
       saveWords(Array.from(map.values()));
@@ -2337,6 +2983,7 @@ function parseCSV(text){
 function importCSVText(csvText){
   const grid = parseCSV(csvText).filter(r => r.some(c => c && c.length));
   if(!grid.length){ alert('CSV 無內容'); return; }
+  const lang = getLang();
   const head = grid[0].map(x => x.toLowerCase());
   const hasHeader = [
     'word','display','pos','phon','defs','note','count',
@@ -2357,8 +3004,10 @@ function importCSVText(csvText){
       w = (r[0] || '').trim();
     }
     if(!w) continue;
-    const key = toLowerAlpha(w);
+    const key = normalizeLexemeKey(w, lang);
+    if(!key) continue;
     const display = hasHeader ? (r[idx('display')] || w).trim() : w;
+    const canonicalDisplay = lang === 'de' ? key : display;
     const pos  = hasHeader ? (r[idx('pos')]  || '').trim() : '';
     const phon = hasHeader ? (r[idx('phon')] || '').trim() : '';
     const defsRaw = hasHeader ? (r[idx('defs')] || '').trim() : '';
@@ -2385,10 +3034,11 @@ function importCSVText(csvText){
     const now = nowISO();
     const existed = map.get(key);
     if(existed){
-      const baseRow = normalizeWordEntry(existed, key);
+      const baseRow = normalizeWordEntry(existed, key, lang);
       map.set(key, {
         ...baseRow,
-        display: display || baseRow.display || w,
+        display: canonicalDisplay || baseRow.display || w,
+        aliases: Array.from(new Set([...(baseRow.aliases || []), toLowerAlpha(display), toLowerAlpha(w)])).filter(Boolean),
         pos: pos || baseRow.pos || '',
         phon: phon || baseRow.phon || '',
         defs: defs.length ? defs : (baseRow.defs || []),
@@ -2412,7 +3062,8 @@ function importCSVText(csvText){
     }else{
       map.set(key, {
         word: key,
-        display: display || w,
+        display: canonicalDisplay || w,
+        aliases: Array.from(new Set([toLowerAlpha(display), toLowerAlpha(w), key])).filter(Boolean),
         count: 5 + (countCsv||0),
         firstSeen: now,
         lastSeen: now,
@@ -2591,8 +3242,27 @@ function buildVariantPattern(w){
   return new RegExp('\\b(' + Array.from(forms).map(escapeRegExp).join('|') + ')\\b', 'i');
 }
 
-function wordsMissingFrom(text, words){
+async function wordsMissingFrom(text, words){
   const t = text || '';
+  if(getLang() === 'de'){
+    let lexemeSet = null;
+    try{
+      const tokens = await analyzeGermanMorphology(t);
+      if(tokens && tokens.length){
+        lexemeSet = new Set(tokens.map(tok => normalizeLexemeKey(tok.lexeme || tok.lemma || tok.form, 'de')).filter(Boolean));
+      }
+    }catch{
+      lexemeSet = null;
+    }
+    if(!lexemeSet){
+      lexemeSet = analyzeGermanLexemeSetFromText(t);
+    }
+    return words
+      .map(w => normalizeLexemeKey(w, 'de'))
+      .filter(Boolean)
+      .filter((w, idx, arr) => arr.indexOf(w) === idx)
+      .filter(w => !lexemeSet.has(w));
+  }
   const missing = [];
   for(const w of words){
     const re = buildVariantPattern(w);
@@ -2974,8 +3644,8 @@ function bindWordCardQA(){
       ? (document.getElementById('grokKey').value.trim() || loadGrokKey())
       : (document.getElementById('openaiKey').value.trim() || loadOpenAIKey());
     if(!key){ alert('請先輸入對應的 API Key'); return; }
-    const titleText = (document.getElementById('cardTitle').textContent || '').trim();
-    const word = titleText.replace(/^查詢\s*/,'').trim();
+    const word = getActiveCardWordKey();
+    if(!word){ alert('找不到目前單字'); return; }
     document.getElementById('qaBox').textContent = '回答生成中...';
     try{
       const ans = await doChat({
@@ -3100,10 +3770,10 @@ function bindStoryUI(){
         return;
       }
       let text = await generateContentWithOpenAI({ lang, type, words, level, customTopic, targetCount });
-      let missing = wordsMissingFrom(text, words);
+      let missing = await wordsMissingFrom(text, words);
       if(missing.length){
         text = await reviseContentToInclude({ lang, baseText: text, missingWords: missing, level, type, targetCount });
-        missing = wordsMissingFrom(text, words);
+        missing = await wordsMissingFrom(text, words);
         if(missing.length){ alert('注意：仍未成功納入：\n' + missing.join(', ')); }
       }
       $('#src').value = text; compile(); saveActiveSlot();
@@ -3144,11 +3814,16 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
     $('#src').value=''; compiledSegments = []; useVirtualScroll = false; deductedWords.clear(); clearWordNodeMap(); segmentHeights.length = 0;
     teardownReader();
     reader.innerHTML='<div class="empty">已清空，請貼上新文章。</div>';
+    setActiveCardWordContext('');
     for(const [,v] of segAudios){ try{ URL.revokeObjectURL(v.url); }catch{} }
     segAudios.clear(); ttsGenerated=false; ttsDrawer.classList.remove('show');
     updateProgressUI(0); saveActiveSlot();
   });
-  $('#cardClose')?.addEventListener('click', ()=> card.style.display='none'); resetWordQ();
+  $('#cardClose')?.addEventListener('click', ()=>{
+    card.style.display='none';
+    setActiveCardWordContext('');
+    resetWordQ();
+  });
   $('#exportCSV')?.addEventListener('click', exportCSV);
   $('#exportJSON')?.addEventListener('click', exportJSON);
   $('#importJSON')?.addEventListener('change', e=>{
@@ -3179,8 +3854,8 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
     });
   }
   $('#saveNote')?.addEventListener('click', ()=>{
-    const titleText = (document.getElementById('cardTitle').textContent || '').trim();
-    const word = titleText.replace(/^查詢\s*/,'').trim();
+    const word = getActiveCardWordKey();
+    if(!word){ setStatus('找不到目前單字'); return; }
     updateWordNote(word, noteInput.value || '');
     setStatus('已儲存備註');
   });

@@ -10,6 +10,7 @@
 ## 功能概覽
 - 五格書架: 每格存文章、標題與捲動進度。
 - 閱讀區: 分詞渲染，點字查詢與統計；可切換「次數」或「SRS」模式（SRS 下單擊=Again、雙擊=Good）。
+- 德語詞形: 背景使用 UDPipe 進行 lemma/POS/依存分析，合併動詞人稱時態、名詞單複數、形容詞/副詞詞形，並辨識可分離動詞。
 - 生字本: 依語言分庫，搜尋、匯入/匯出 CSV/JSON。
 - 高頻標示: 前 15 藍框、16-50 綠框; 扣分字停止高頻統計。
 - AI 協助: 單字字典卡、文章生成（可設定單字策略與截取數量）、句子解析與追問。
@@ -74,6 +75,7 @@
 - 路由:
   - `GET/POST /api/state`：同步 JSON 到 GAS。
   - `POST /api/chat`：代理 OpenAI/Grok chat completions（前端可帶 `provider/apiKey/model/messages/temperature`）。
+  - `POST /api/morph`：代理 UDPipe 形態分析（前端帶 `text/lang/model`，回傳 CoNLL-U `result`）。
 
 ## GAS Web App 範本（同步用）
 建立 Apps Script Web App 後，將 `TOKEN` 與 `FOLDER_ID` 改成自己的設定。
@@ -102,6 +104,8 @@ function forbidden(){ return ContentService.createTextOutput('forbidden').setRes
 - Chat:
   - OpenAI：前端可直接呼叫 `https://api.openai.com/v1/chat/completions`（預設 `gpt-4o-mini`）。
   - Grok：建議透過 `${API_BASE}/api/chat` 由 proxy 轉發到 `https://api.x.ai/v1/chat/completions`（預設 `grok-4`），避免瀏覽器 CORS 被擋。
+- 形態分析（德語）:
+  - 前端優先呼叫 `${API_BASE}/api/morph`；若 proxy 未部署，會 fallback 直連 `https://lindat.mff.cuni.cz/services/udpipe/api/process`。
 - TTS: OpenAI `https://api.openai.com/v1/audio/speech`（model `gpt-4o-mini-tts`）。
 
 ## 開發備註
