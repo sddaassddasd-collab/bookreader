@@ -1284,7 +1284,10 @@ function clearRemoteConfig(){
 
 function applyRemoteLLMConfig(pref = {}){
   const providerSelect = document.getElementById('providerSelect');
-  if(providerSelect && pref.provider) providerSelect.value = pref.provider;
+  if(providerSelect && pref.provider){
+    providerSelect.value = pref.provider;
+    providerSelect.dispatchEvent(new Event('change'));
+  }
   const modelSelect = document.getElementById('modelSelect');
   if(modelSelect && pref.modelSelect) modelSelect.value = pref.modelSelect;
   const modelCustom = document.getElementById('modelCustom');
@@ -3205,6 +3208,44 @@ function importCSVFile(file){
 }
 
 /* ========= OpenAI / Grok ========= */
+function parseApiErrorPayload(raw = ''){
+  let message = String(raw || '').trim();
+  let code = '';
+  try{
+    const data = JSON.parse(raw || '{}');
+    const err = data?.error || {};
+    if(err && typeof err === 'object'){
+      if(typeof err.message === 'string' && err.message.trim()){
+        message = err.message.trim();
+      }
+      if(typeof err.code === 'string' && err.code.trim()){
+        code = err.code.trim();
+      }else if(typeof err.type === 'string' && err.type.trim()){
+        code = err.type.trim();
+      }
+    }
+  }catch{}
+  return { message, code };
+}
+function isOpenAIModelUnavailable(code = '', message = ''){
+  const t = `${code} ${message}`.toLowerCase();
+  return t.includes('model_not_found')
+    || t.includes('invalid_model')
+    || (t.includes('model') && t.includes('does not exist'))
+    || (t.includes('model') && t.includes('not found'))
+    || t.includes('not have access')
+    || t.includes('do not have access');
+}
+function shouldRetryWithoutTemperature(status, code = '', message = ''){
+  if(status !== 400) return false;
+  const t = `${code} ${message}`.toLowerCase();
+  if(!t.includes('temperature')) return false;
+  return t.includes('unsupported')
+    || t.includes('not supported')
+    || t.includes('unknown parameter')
+    || t.includes('unrecognized parameter')
+    || t.includes('invalid parameter');
+}
 async function doChat({ provider, apiKey, model, messages, temperature=0.7 }) {
   const p = (provider || 'openai');
   const m = model && model.trim();
@@ -3236,17 +3277,49 @@ async function doChat({ provider, apiKey, model, messages, temperature=0.7 }) {
     const key = apiKey || loadOpenAIKey();
     if(!key) throw new Error('請先填入 OpenAI API Key');
     const useModel = m || 'gpt-4o-mini';
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: useModel, messages, temperature })
-    });
-    if(!resp.ok){
-      const msg = await resp.text().catch(()=>resp.status);
+    const endpoint = 'https://api.openai.com/v1/chat/completions';
+    const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
+    const callOpenAI = async (payload)=>{
+      let resp;
+      try{
+        resp = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload)
+        });
+      }catch(err){
+        throw new Error(`OpenAI 連線失敗：${err.message}`);
+      }
+      const raw = await resp.text().catch(()=> '');
+      if(resp.ok){
+        try{
+          const data = JSON.parse(raw || '{}');
+          return { ok: true, status: resp.status, data, raw: '' };
+        }catch{
+          return { ok: false, status: resp.status, data: null, raw: raw || '回傳格式無法解析' };
+        }
+      }
+      return { ok: false, status: resp.status, data: null, raw };
+    };
+
+    let result = await callOpenAI({ model: useModel, messages, temperature });
+    if(!result.ok){
+      const first = parseApiErrorPayload(result.raw);
+      if(shouldRetryWithoutTemperature(result.status, first.code, first.message)){
+        result = await callOpenAI({ model: useModel, messages });
+      }
+    }
+
+    if(!result.ok){
+      const errInfo = parseApiErrorPayload(result.raw);
+      const msg = errInfo.message || `HTTP ${result.status}`;
+      if(isOpenAIModelUnavailable(errInfo.code, msg)){
+        throw new Error(`OpenAI 模型不可用：${useModel}。請改用 gpt-4o-mini 或確認帳號已開通該模型。原始錯誤：${msg}`);
+      }
       throw new Error('OpenAI 失敗：' + msg);
     }
-    const data = await resp.json();
-    return (data.choices?.[0]?.message?.content || '').trim();
+
+    return (result.data?.choices?.[0]?.message?.content || '').trim();
   }
 }
 
@@ -3308,18 +3381,18 @@ function getGenerationWords(n = DEFAULT_GEN_WORD_COUNT){
   const mode = getWordSelectionMode();
   return mode === WORD_MODE_SRS ? getTopNWordsSRS(count) : getTopNWordsLocal(count);
 }
-function getLookupTs(row){
-  const ts = Date.parse(row?.lastLookupAt || '');
+function getLastSeenTs(row){
+  const ts = Date.parse(row?.lastSeen || '');
   return Number.isFinite(ts) ? ts : 0;
 }
-function getWordsLookedUpLast24h(){
+function getWordsSeenLast24h(){
   const sinceTs = Date.now() - DAY_MS;
-  return (loadWords().filter(x => !x.isMastered) || [])
-    .filter(row => getLookupTs(row) >= sinceTs)
+  return (loadWords() || [])
+    .filter(row => getLastSeenTs(row) >= sinceTs)
     .slice()
     .sort((a,b)=>{
-      const lookupDiff = getLookupTs(b) - getLookupTs(a);
-      if(lookupDiff !== 0) return lookupDiff;
+      const seenDiff = getLastSeenTs(b) - getLastSeenTs(a);
+      if(seenDiff !== 0) return seenDiff;
       const c = (b.count||0) - (a.count||0);
       return c !== 0 ? c : (b.lastSeen||'').localeCompare(a.lastSeen||'');
     })
@@ -3800,7 +3873,8 @@ function bindStoryUI(){
   const targetWordCountInput = $('#targetWordCount');
 
   const MODEL_OPTIONS = {
-    openai: [ 'gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini' ],
+    // Keep current defaults while exposing latest GPT-5 series options in Chat Completions.
+    openai: [ 'gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-5.4', 'gpt-5-mini', 'gpt-5' ],
     grok: [ 'grok-4', 'grok-4-fast', 'grok-2.5', 'grok-2-latest', 'grok-2-mini' ]
   };
 
@@ -3810,9 +3884,18 @@ function bindStoryUI(){
   if(targetWordCountInput) targetWordCountInput.value = String(loadTargetWordCount());
 
   function refillModelOptions(){
+    if(!modelSel) return;
     const p = providerSel.value || 'openai';
-    const opts = MODEL_OPTIONS[p] || [];
+    const opts = Array.from(new Set((MODEL_OPTIONS[p] || []).filter(Boolean)));
+    const prev = (modelSel.value || '').trim();
     modelSel.innerHTML = opts.map(x=>`<option value="${x}">${x}</option>`).join('');
+    if(prev && opts.includes(prev)){
+      modelSel.value = prev;
+      return;
+    }
+    if(opts.length){
+      modelSel.value = opts[0];
+    }
   }
   refillModelOptions();
 
@@ -3957,11 +4040,11 @@ function bindStoryUI(){
     await runGeneration({
       triggerBtn: gen24hBtn,
       busyText: '24h 生成中…',
-      wordsProvider: () => getWordsLookedUpLast24h(),
+      wordsProvider: () => getWordsSeenLast24h(),
       allowRandomWhenEmpty: false,
-      emptyAlert: '目前沒有 24 小時內查過的單字。',
+      emptyAlert: '目前沒有 24 小時內學習過的單字。',
       successAlertBuilder: ({ words })=>
-        `已依 24 小時內查過的 ${words.length} 個單字生成內容（允許詞形變化/派生）。`
+        `已依 24 小時內學習過的 ${words.length} 個單字生成內容（允許詞形變化/派生）。`
     });
   });
 }
