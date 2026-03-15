@@ -65,7 +65,7 @@
               <option value="female">女</option>
             </select>
           </div>
-          <div class="help">雙擊某字可扣 2，並讓該次生成的所有相同字變紅；重新產生會恢復。前 15 藍框、16–50 綠框。段落喇叭在「生成語音」後才出現。</div>
+          <div class="help">次數模式：雙擊某字可扣 1；SRS 模式：單擊視為 Again（不會）、雙擊視為 Good（已會）。扣分字會標紅，重新產生會恢復。前 15 藍框、16–50 綠框。段落喇叭在「生成語音」後才出現。</div>
         </div>
 
         <div class="panel reader-wrap">
@@ -151,10 +151,17 @@
             <input id="customTopic" placeholder="輸入想要生成的主題／風格" class="flex-1" style="display:none">
             <label class="help" for="lengthInput">字數：</label>
             <input id="lengthInput" type="number" min="100" max="1200" step="50" value="500" class="number">
+            <label class="help" for="wordModeSelect">詞彙策略：</label>
+            <select id="wordModeSelect">
+              <option value="count" selected>次數</option>
+              <option value="srs">SRS</option>
+            </select>
+            <label class="help" for="targetWordCount">單字數：</label>
+            <input id="targetWordCount" type="number" min="1" max="50" step="1" value="15" class="number">
             <button id="saveKey" class="secondary">儲存金鑰（本機）</button>
             <button id="genContent">生成內容</button>
           </div>
-          <div class="help">有生字本→取點擊最多的前 15；無單字→隨機生成。字數可在右側調整。</div>
+          <div class="help">有生字本時會依「詞彙策略」截取指定數量的單字；無單字時隨機生成。</div>
         </div>
 
         <div class="search">

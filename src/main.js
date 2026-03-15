@@ -29,6 +29,17 @@ const STORE_KEYS = { en: 'word-noter.en.v1', de: 'word-noter.de.v1', fr: 'word-n
 const QUEUE_KEYS = { en: 'word-noter.queue.en.v1', de: 'word-noter.queue.de.v1', fr: 'word-noter.queue.fr.v1' };
 const OPENAI_KEY_STORAGE = 'word-noter.openai.key';
 const GROK_KEY_STORAGE = 'word-noter.grok.key';
+const WORD_MODE_STORAGE = 'word-noter.gen.word-mode.v1';
+const WORD_COUNT_STORAGE = 'word-noter.gen.word-count.v1';
+const WORD_MODE_COUNT = 'count';
+const WORD_MODE_SRS = 'srs';
+const DEFAULT_GEN_WORD_COUNT = 15;
+const MIN_GEN_WORD_COUNT = 1;
+const MAX_GEN_WORD_COUNT = 50;
+const SRS_DEFAULT_EASE = 2.5;
+const SRS_MIN_EASE = 1.3;
+const SRS_MAX_EASE = 3.2;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const VOICE_MALE = 'verse';
 const VOICE_FEMALE = 'alloy';
 
@@ -121,7 +132,9 @@ function captureLLMAndLangPrefs(){
     genre: (document.getElementById('genreSelect')?.value || 'fairy_tale'),
     customTopic: getCustomTopic(),
     length: getTargetLen(),
-    voicePref: (document.getElementById('voicePref')?.value || 'male')
+    voicePref: (document.getElementById('voicePref')?.value || 'male'),
+    wordMode: getWordSelectionMode(),
+    targetWordCount: getTargetWordCount()
   };
 }
 
@@ -571,7 +584,16 @@ async function pullRemoteState(id = remoteId){
   let data = {};
   try{ data = await resp.json(); }catch{ data = {}; }
   if(!data || typeof data !== 'object') data = {};
-  const hasPayload = Array.isArray(data.slots) || typeof data.activeSlotId !== 'undefined' || Array.isArray(data.words);
+  const hasPayload = Array.isArray(data.slots)
+    || typeof data.activeSlotId !== 'undefined'
+    || Array.isArray(data.words)
+    || typeof data.lang === 'string'
+    || typeof data.level === 'string'
+    || typeof data.genre === 'string'
+    || typeof data.length !== 'undefined'
+    || typeof data.wordMode === 'string'
+    || typeof data.targetWordCount !== 'undefined'
+    || (data.llm && typeof data.llm === 'object');
   if(!hasPayload){
     renderSlotBoard();
     setActiveSlot(activeSlotId);
@@ -595,6 +617,16 @@ async function pullRemoteState(id = remoteId){
   if(typeof data.length !== 'undefined' && data.length !== null){
     const lenEl = document.getElementById('lengthInput');
     if(lenEl) lenEl.value = data.length;
+  }
+  if(typeof data.wordMode === 'string'){
+    const modeEl = document.getElementById('wordModeSelect');
+    const mode = saveWordMode(data.wordMode);
+    if(modeEl) modeEl.value = mode;
+  }
+  if(typeof data.targetWordCount !== 'undefined' && data.targetWordCount !== null){
+    const countEl = document.getElementById('targetWordCount');
+    const count = saveTargetWordCount(data.targetWordCount);
+    if(countEl) countEl.value = String(count);
   }
   if(data.llm && typeof data.llm === 'object'){
     applyRemoteLLMConfig(data.llm);
@@ -638,6 +670,8 @@ async function pushRemoteState(id = remoteId){
     level: llmPref.level,
     genre: llmPref.genre,
     length: llmPref.length,
+    wordMode: llmPref.wordMode,
+    targetWordCount: llmPref.targetWordCount,
     llm: llmPref,
     updatedAt: nowISO()
   };
@@ -692,6 +726,18 @@ function applyRemoteLLMConfig(pref = {}){
   if(customTopic && typeof pref.customTopic === 'string') customTopic.value = pref.customTopic;
   const lengthInput = document.getElementById('lengthInput');
   if(lengthInput && pref.length) lengthInput.value = pref.length;
+  const wordModeSelect = document.getElementById('wordModeSelect');
+  if(wordModeSelect && pref.wordMode){
+    const mode = sanitizeWordMode(pref.wordMode);
+    wordModeSelect.value = mode;
+    saveWordMode(mode);
+  }
+  const targetWordCountInput = document.getElementById('targetWordCount');
+  if(targetWordCountInput && typeof pref.targetWordCount !== 'undefined'){
+    const count = clampTargetWordCount(pref.targetWordCount);
+    targetWordCountInput.value = String(count);
+    saveTargetWordCount(count);
+  }
   const voicePref = document.getElementById('voicePref');
   if(voicePref && pref.voicePref) voicePref.value = pref.voicePref;
   const langSelect = document.getElementById('langSelect');
@@ -783,6 +829,48 @@ function getTargetLen(){
   const v = parseInt(el?.value || '500', 10);
   if (!isFinite(v)) return 500;
   return Math.max(100, Math.min(1200, v));
+}
+function sanitizeWordMode(mode){
+  return mode === WORD_MODE_SRS ? WORD_MODE_SRS : WORD_MODE_COUNT;
+}
+function clampTargetWordCount(v){
+  const num = parseInt(String(v ?? DEFAULT_GEN_WORD_COUNT), 10);
+  if(!Number.isFinite(num)) return DEFAULT_GEN_WORD_COUNT;
+  return Math.max(MIN_GEN_WORD_COUNT, Math.min(MAX_GEN_WORD_COUNT, num));
+}
+function loadWordMode(){
+  try{
+    return sanitizeWordMode(localStorage.getItem(WORD_MODE_STORAGE));
+  }catch{
+    return WORD_MODE_COUNT;
+  }
+}
+function saveWordMode(mode){
+  const next = sanitizeWordMode(mode);
+  try{ localStorage.setItem(WORD_MODE_STORAGE, next); }catch{}
+  return next;
+}
+function loadTargetWordCount(){
+  try{
+    return clampTargetWordCount(localStorage.getItem(WORD_COUNT_STORAGE));
+  }catch{
+    return DEFAULT_GEN_WORD_COUNT;
+  }
+}
+function saveTargetWordCount(v){
+  const next = clampTargetWordCount(v);
+  try{ localStorage.setItem(WORD_COUNT_STORAGE, String(next)); }catch{}
+  return next;
+}
+function getWordSelectionMode(){
+  const el = document.getElementById('wordModeSelect');
+  if(el) return sanitizeWordMode(el.value);
+  return loadWordMode();
+}
+function getTargetWordCount(){
+  const el = document.getElementById('targetWordCount');
+  if(el) return clampTargetWordCount(el.value);
+  return loadTargetWordCount();
 }
 function getLangLabel(){
   const title = document.querySelector('header .wrap strong');
@@ -1151,22 +1239,75 @@ function bindTTSUI(){
 function persistWordsToStorage(key, list){
   try{ localStorage.setItem(key, JSON.stringify(list)); }catch{}
 }
+function parseIsoOrFallback(v, fallback = nowISO()){
+  const ts = Date.parse(v || '');
+  if(Number.isFinite(ts)) return new Date(ts).toISOString();
+  return fallback;
+}
+function normalizeSrsState(v){
+  return (v === 'learning' || v === 'review' || v === 'new') ? v : 'new';
+}
+function normalizeWordEntry(entry = {}, fallbackWord = ''){
+  const key = toLowerAlpha(entry.word || fallbackWord);
+  if(!key) return null;
+  const firstSeen = parseIsoOrFallback(entry.firstSeen, nowISO());
+  const lastSeen = parseIsoOrFallback(entry.lastSeen, firstSeen);
+  const count = Math.max(0, Number(entry.count) || 0);
+  const srsInterval = Math.max(0, Number(entry.srsInterval) || 0);
+  const srsEase = Math.min(SRS_MAX_EASE, Math.max(SRS_MIN_EASE, Number(entry.srsEase) || SRS_DEFAULT_EASE));
+  const fallbackDue = srsInterval > 0 ? new Date(Date.parse(lastSeen) + (srsInterval * DAY_MS)).toISOString() : lastSeen;
+  const srsDueAt = parseIsoOrFallback(entry.srsDueAt, fallbackDue);
+  const srsStateRaw = normalizeSrsState(entry.srsState);
+  const srsState = srsStateRaw === 'new' && srsInterval > 0 ? 'review' : srsStateRaw;
+  return {
+    word: key,
+    display: entry.display || entry.word || fallbackWord || key,
+    count,
+    firstSeen,
+    lastSeen,
+    pos: entry.pos || '',
+    phon: entry.phon || '',
+    defs: Array.isArray(entry.defs) ? entry.defs.filter(Boolean) : [],
+    note: entry.note || '',
+    srsEase,
+    srsInterval,
+    srsDueAt,
+    srsState,
+    srsStreak: Math.max(0, parseInt(entry.srsStreak || '0', 10) || 0),
+    srsLapses: Math.max(0, parseInt(entry.srsLapses || '0', 10) || 0)
+  };
+}
+function normalizeWordList(rows){
+  if(!Array.isArray(rows)) return [];
+  const out = [];
+  rows.forEach((row)=>{
+    const normalized = normalizeWordEntry(row, row?.word || '');
+    if(normalized) out.push(normalized);
+  });
+  return out;
+}
 function loadWords(){
   const key = _curStoreKey();
   if(wordsCache && wordsCacheKey === key) return wordsCache;
   wordsCacheKey = key;
+  let raw = [];
   try{
-    wordsCache = JSON.parse(localStorage.getItem(key)) || [];
+    raw = JSON.parse(localStorage.getItem(key)) || [];
   }catch{
-    wordsCache = [];
+    raw = [];
+  }
+  wordsCache = normalizeWordList(raw);
+  if(JSON.stringify(raw) !== JSON.stringify(wordsCache)){
+    persistWordsToStorage(key, wordsCache);
   }
   return wordsCache;
 }
 function saveWords(list, opts = {}){
   const key = _curStoreKey();
+  const normalized = normalizeWordList(list);
   wordsCacheKey = key;
-  wordsCache = list;
-  wordsSavePayload = { key, list };
+  wordsCache = normalized;
+  wordsSavePayload = { key, list: normalized };
   if(wordsSaveTimer) clearTimeout(wordsSaveTimer);
   wordsSaveTimer = setTimeout(()=>{
     wordsSaveTimer = null;
@@ -1215,25 +1356,25 @@ function scheduleWordUiRefresh(){
 function upsertWord(word, payload = {}, inc = true){
   const base = loadWords();
   const key = toLowerAlpha(word);
+  const now = nowISO();
   const idx = base.findIndex(x => x.word === key);
   if (idx >= 0){
-    base[idx] = {
-      ...base[idx],
-      count: inc ? (base[idx].count || 0) + 1 : (base[idx].count || 0),
-      lastSeen: nowISO(),
-      pos: payload.pos ?? base[idx].pos,
-      phon: payload.phon ?? base[idx].phon,
-      defs: payload.defs ?? base[idx].defs,
-      note: payload.note ?? base[idx].note,
-      display: payload.display ?? base[idx].display
-    };
+    const row = normalizeWordEntry(base[idx], key);
+    row.count = inc ? (row.count || 0) + 1 : (row.count || 0);
+    row.lastSeen = now;
+    row.pos = payload.pos ?? row.pos;
+    row.phon = payload.phon ?? row.phon;
+    row.defs = payload.defs ?? row.defs;
+    row.note = payload.note ?? row.note;
+    row.display = payload.display ?? row.display;
+    base[idx] = row;
   } else {
-    base.push({
+    base.push(normalizeWordEntry({
       word: key, display: payload.display || word,
-      count: inc ? 1 : 0, firstSeen: nowISO(), lastSeen: nowISO(),
+      count: inc ? 1 : 0, firstSeen: now, lastSeen: now,
       pos: payload.pos || '', phon: payload.phon || '',
       defs: payload.defs || [], note: payload.note || ''
-    });
+    }, key));
   }
   saveWords(base);
   scheduleWordUiRefresh();
@@ -1243,8 +1384,10 @@ function adjustWordCount(word, delta){
   const key = toLowerAlpha(word);
   const idx = base.findIndex(x => x.word === key);
   if(idx < 0) return;
-  base[idx].count = Math.max(0, (base[idx].count||0) + delta);
-  base[idx].lastSeen = nowISO();
+  const row = normalizeWordEntry(base[idx], key);
+  row.count = Math.max(0, (row.count||0) + delta);
+  row.lastSeen = nowISO();
+  base[idx] = row;
   saveWords(base);
   scheduleWordUiRefresh();
 }
@@ -1253,15 +1396,72 @@ function updateWordNote(word, note){
   const key = toLowerAlpha(word);
   const idx = base.findIndex(x => x.word === key);
   if(idx >= 0){
-    base[idx].note = note;
-    base[idx].lastSeen = nowISO();
+    const row = normalizeWordEntry(base[idx], key);
+    row.note = note;
+    row.lastSeen = nowISO();
+    base[idx] = row;
     saveWords(base);
     scheduleWordUiRefresh();
   }
 }
+function applySrsReview(word, rating = 'good'){
+  const base = loadWords();
+  const key = toLowerAlpha(word);
+  const idx = base.findIndex(x => x.word === key);
+  if(idx < 0) return;
+
+  const row = normalizeWordEntry(base[idx], key);
+  const nowTs = Date.now();
+  let ease = row.srsEase || SRS_DEFAULT_EASE;
+  let interval = Math.max(0, row.srsInterval || 0);
+  let streak = Math.max(0, row.srsStreak || 0);
+  let lapses = Math.max(0, row.srsLapses || 0);
+  let state = row.srsState || 'new';
+  const score = String(rating || 'good').toLowerCase();
+
+  if(score === 'again'){
+    ease = Math.max(SRS_MIN_EASE, ease - 0.2);
+    interval = 1 / 24; // 約 1 小時後再出現
+    streak = 0;
+    lapses += 1;
+    state = 'learning';
+  }else if(score === 'easy'){
+    ease = Math.min(SRS_MAX_EASE, ease + 0.15);
+    interval = interval <= 0 ? 3 : Math.max(interval + 1, interval * (ease + 0.35));
+    streak += 1;
+    state = 'review';
+  }else if(score === 'hard'){
+    ease = Math.max(SRS_MIN_EASE, ease - 0.05);
+    interval = interval <= 0 ? 0.5 : Math.max(0.5, interval * 1.2);
+    streak += 1;
+    state = interval < 1 ? 'learning' : 'review';
+  }else{
+    ease = Math.min(SRS_MAX_EASE, ease + 0.03);
+    if(state === 'new' || interval <= 0){
+      interval = 1;
+      state = 'learning';
+    }else{
+      interval = Math.max(1, interval * ease);
+      state = 'review';
+    }
+    streak += 1;
+  }
+
+  row.srsEase = Math.min(SRS_MAX_EASE, Math.max(SRS_MIN_EASE, ease));
+  row.srsInterval = Math.max(0, Math.round(interval * 100) / 100);
+  row.srsStreak = streak;
+  row.srsLapses = lapses;
+  row.srsState = state;
+  row.srsDueAt = new Date(nowTs + (row.srsInterval * DAY_MS)).toISOString();
+  row.lastSeen = nowISO();
+  base[idx] = row;
+  saveWords(base);
+  scheduleWordUiRefresh();
+}
 function getWord(word){
   const base = loadWords();
-  return base.find(x => x.word === toLowerAlpha(word));
+  const row = base.find(x => x.word === toLowerAlpha(word));
+  return row ? normalizeWordEntry(row, row.word) : null;
 }
 
 /* ========= 高頻標示 ========= */
@@ -1818,25 +2018,48 @@ function handleReaderDblClick(e){
   if(!target || target.closest('.playseg')) return;
   onWordDblClickHandler(target);
 }
+function setWordDeductedVisual(word, on){
+  const key = toLowerAlpha(word);
+  const nodes = getWordNodes(key);
+  if(on){
+    deductedWords.add(key);
+    nodes.forEach(node=>{
+      node.classList.remove('hf15','hf50');
+      node.classList.add('deducted');
+    });
+    return;
+  }
+  deductedWords.delete(key);
+  nodes.forEach(node=> node.classList.remove('deducted'));
+  updateHFClassesForWord(key);
+}
 async function processSingleClick(el){
   const display = el.dataset.w;
   const word = toLowerAlpha(display);
+  const mode = getWordSelectionMode();
+  const shouldCount = mode === WORD_MODE_COUNT;
   const nodes = getWordNodes(word);
   const anyDeducted = deductedWords.has(word) || nodes.some(node => node.classList.contains('deducted'));
-  if(anyDeducted){
-    deductedWords.delete(word);
-    nodes.forEach(node=> node.classList.remove('deducted'));
-    updateHFClassesForWord(word);
+  if(mode === WORD_MODE_COUNT && anyDeducted){
+    setWordDeductedVisual(word, false);
     scheduleWordUiRefresh();
     return;
   }
   if(isDictOff()){
-    upsertWord(word, { display }, true);
+    upsertWord(word, { display }, shouldCount);
+    if(mode === WORD_MODE_SRS){
+      applySrsReview(word, 'again');
+      setWordDeductedVisual(word, true);
+    }
     return;
   }
 
   showWordCardSkeleton(display, word);
-  upsertWord(word, { display }, true);
+  upsertWord(word, { display }, shouldCount);
+  if(mode === WORD_MODE_SRS){
+    applySrsReview(word, 'again');
+    setWordDeductedVisual(word, true);
+  }
 
   try{
     const info = await lookupDefinition(word);
@@ -1895,20 +2118,34 @@ async function processSingleClick(el){
 function processDoubleClick(el){
   const display = el.dataset.w;
   const word = toLowerAlpha(display);
-  deductedWords.add(word);
-  adjustWordCount(word, -2);
-  const nodes = getWordNodes(word);
-  nodes.forEach(node=>{
-    node.classList.remove('hf15','hf50');
-    node.classList.add('deducted');
-  });
+  if(getWordSelectionMode() === WORD_MODE_SRS){
+    upsertWord(word, { display }, false);
+    applySrsReview(word, 'good');
+    setWordDeductedVisual(word, false);
+  }else{
+    adjustWordCount(word, -1);
+    setWordDeductedVisual(word, true);
+  }
   el.animate([{transform:'scale(1.02)'},{transform:'scale(1)'}],{duration:150});
 }
 
 /* ========= 生字本側欄 ========= */
+function formatSrsDueLabel(iso){
+  const ts = Date.parse(iso || '');
+  if(!Number.isFinite(ts)) return '待排程';
+  const deltaMs = ts - Date.now();
+  if(deltaMs <= 0) return '到期';
+  const mins = Math.round(deltaMs / 60000);
+  if(mins < 60) return `${mins} 分後`;
+  const hours = Math.round(mins / 60);
+  if(hours < 24) return `${hours} 小時後`;
+  const days = Math.round(hours / 24);
+  return `${days} 天後`;
+}
 function renderWordList(){
   const box = $('#wordList');
   const q = ($('#q').value || '').trim().toLowerCase();
+  const mode = getWordSelectionMode();
   const all = loadWords()
     .slice()
     .sort((a,b)=> (b.lastSeen||'').localeCompare(a.lastSeen||''));
@@ -1919,18 +2156,27 @@ function renderWordList(){
     box.innerHTML = '<div class="empty">目前沒有生字。</div>';
     return;
   }
-  box.innerHTML = list.map(x=>`
+  box.innerHTML = list.map(x=>{
+    const badgeText = mode === WORD_MODE_SRS
+      ? `${formatSrsDueLabel(x.srsDueAt)} · ${x.srsState || 'new'}`
+      : `×${x.count||0}`;
+    const srsMeta = mode === WORD_MODE_SRS
+      ? `<div class="t">SRS：${(x.srsInterval||0).toFixed(2)} 天 · E ${Number(x.srsEase||SRS_DEFAULT_EASE).toFixed(2)} · 失誤 ${x.srsLapses||0}</div>`
+      : '';
+    return `
     <div class="item" data-w="${x.word}">
       <div>
         <div class="w">${x.display || x.word}${x.phon ? `<span class="phon"> /${x.phon}/</span>`:''}</div>
         <div class="t">${x.pos || ''}</div>
         ${x.defs?.length ? `<div class="t">• ${x.defs[0]}</div>`:''}
+        ${srsMeta}
         ${x.note ? `<div class="t">備註：${x.note}</div>`:''}
       </div>
-      <div class="c">×${x.count||0}</div>
+      <div class="c">${badgeText}</div>
       <button class="secondary" onclick="window.focusWord('${x.word}')">查看</button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 window.focusWord = async function(word){
   const key = toLowerAlpha(word);
@@ -1992,10 +2238,15 @@ function download(filename, text){
 }
 function exportCSV(){
   const rows = loadWords();
-  const head = ['word','display','count','firstSeen','lastSeen','pos','phon','defs','note'];
+  const head = [
+    'word','display','count','firstSeen','lastSeen',
+    'srsState','srsDueAt','srsInterval','srsEase','srsStreak','srsLapses',
+    'pos','phon','defs','note'
+  ];
   const csv = [head.join(',')].concat(rows.map(r=>{
     const vals = [
       r.word, r.display||'', r.count||0, r.firstSeen||'', r.lastSeen||'',
+      r.srsState||'new', r.srsDueAt||'', r.srsInterval||0, r.srsEase||SRS_DEFAULT_EASE, r.srsStreak||0, r.srsLapses||0,
       r.pos||'', r.phon||'', (r.defs||[]).join(' | '), r.note||''
     ].map(v=> `"${String(v).replace(/"/g,'""')}"`);
     return vals.join(',');
@@ -2058,7 +2309,10 @@ function importCSVText(csvText){
   const grid = parseCSV(csvText).filter(r => r.some(c => c && c.length));
   if(!grid.length){ alert('CSV 無內容'); return; }
   const head = grid[0].map(x => x.toLowerCase());
-  const hasHeader = ['word','display','pos','phon','defs','note','count'].some(k => head.includes(k));
+  const hasHeader = [
+    'word','display','pos','phon','defs','note','count',
+    'srsstate','srsdueat','srsinterval','srsease','srsstreak','srslapses'
+  ].some(k => head.includes(k));
   const base = loadWords();
   const map = new Map(base.map(x => [x.word, x]));
   let added = 0, updated = 0;
@@ -2067,7 +2321,8 @@ function importCSVText(csvText){
   for(const r of rows){
     let w = '';
     if(hasHeader){
-      w = (r[idx('word')] || '').trim();
+      const wIdx = idx('word');
+      w = (wIdx >= 0 ? (r[wIdx] || '') : (r[0] || '')).trim();
     }else{
       w = (r[0] || '').trim();
     }
@@ -2079,20 +2334,39 @@ function importCSVText(csvText){
     const defsRaw = hasHeader ? (r[idx('defs')] || '').trim() : '';
     const note = hasHeader ? (r[idx('note')] || '').trim() : '';
     const countCsv = hasHeader ? (parseInt(r[idx('count')] || '0',10) || 0) : 0;
+    const srsStateCsv = hasHeader ? normalizeSrsState((r[idx('srsstate')] || '').trim().toLowerCase()) : 'new';
+    const srsDueAtCsv = hasHeader ? (r[idx('srsdueat')] || '').trim() : '';
+    const srsIntervalCsv = hasHeader ? (parseFloat(r[idx('srsinterval')] || '0') || 0) : 0;
+    const srsEaseCsv = hasHeader ? (parseFloat(r[idx('srsease')] || '0') || 0) : 0;
+    const srsStreakCsv = hasHeader ? (parseInt(r[idx('srsstreak')] || '0', 10) || 0) : 0;
+    const srsLapsesCsv = hasHeader ? (parseInt(r[idx('srslapses')] || '0', 10) || 0) : 0;
+    const hasSrsFields = hasHeader && (
+      idx('srsstate') >= 0 || idx('srsdueat') >= 0 || idx('srsinterval') >= 0 ||
+      idx('srsease') >= 0 || idx('srsstreak') >= 0 || idx('srslapses') >= 0
+    );
     const defs = defsRaw
       ? defsRaw.split('|').map(s => s.trim()).filter(Boolean)
       : [];
     const now = nowISO();
     const existed = map.get(key);
     if(existed){
+      const baseRow = normalizeWordEntry(existed, key);
       map.set(key, {
-        ...existed,
-        display: display || existed.display || w,
-        pos: pos || existed.pos || '',
-        phon: phon || existed.phon || '',
-        defs: defs.length ? defs : (existed.defs || []),
-        note: note || existed.note || '',
-        count: Math.max(0, (existed.count||0)) + 5 + (countCsv||0),
+        ...baseRow,
+        display: display || baseRow.display || w,
+        pos: pos || baseRow.pos || '',
+        phon: phon || baseRow.phon || '',
+        defs: defs.length ? defs : (baseRow.defs || []),
+        note: note || baseRow.note || '',
+        count: Math.max(0, (baseRow.count||0)) + 5 + (countCsv||0),
+        srsState: hasSrsFields ? srsStateCsv : baseRow.srsState,
+        srsDueAt: hasSrsFields ? parseIsoOrFallback(srsDueAtCsv, baseRow.srsDueAt) : baseRow.srsDueAt,
+        srsInterval: hasSrsFields ? Math.max(0, srsIntervalCsv || 0) : baseRow.srsInterval,
+        srsEase: hasSrsFields
+          ? Math.min(SRS_MAX_EASE, Math.max(SRS_MIN_EASE, srsEaseCsv || SRS_DEFAULT_EASE))
+          : baseRow.srsEase,
+        srsStreak: hasSrsFields ? Math.max(0, srsStreakCsv || 0) : baseRow.srsStreak,
+        srsLapses: hasSrsFields ? Math.max(0, srsLapsesCsv || 0) : baseRow.srsLapses,
         lastSeen: now
       });
       updated++;
@@ -2103,6 +2377,14 @@ function importCSVText(csvText){
         count: 5 + (countCsv||0),
         firstSeen: now,
         lastSeen: now,
+        srsState: hasSrsFields ? srsStateCsv : 'new',
+        srsDueAt: hasSrsFields ? parseIsoOrFallback(srsDueAtCsv, now) : now,
+        srsInterval: hasSrsFields ? Math.max(0, srsIntervalCsv || 0) : 0,
+        srsEase: hasSrsFields
+          ? Math.min(SRS_MAX_EASE, Math.max(SRS_MIN_EASE, srsEaseCsv || SRS_DEFAULT_EASE))
+          : SRS_DEFAULT_EASE,
+        srsStreak: hasSrsFields ? Math.max(0, srsStreakCsv || 0) : 0,
+        srsLapses: hasSrsFields ? Math.max(0, srsLapsesCsv || 0) : 0,
         pos, phon, defs, note
       });
       added++;
@@ -2171,7 +2453,7 @@ async function doChat({ provider, apiKey, model, messages, temperature=0.7 }) {
   }
 }
 
-function getTopNWordsLocal(n=15){
+function getTopNWordsLocal(n = DEFAULT_GEN_WORD_COUNT){
   const all = loadWords();
   return (all||[])
     .slice()
@@ -2182,6 +2464,52 @@ function getTopNWordsLocal(n=15){
     .slice(0, n)
     .map(x => x.display || x.word)
     .filter(Boolean);
+}
+function getSrsDueTs(row){
+  const ts = Date.parse(row?.srsDueAt || '');
+  return Number.isFinite(ts) ? ts : 0;
+}
+function getSrsStateRank(state){
+  if(state === 'learning') return 0;
+  if(state === 'new') return 1;
+  return 2;
+}
+function getTopNWordsSRS(n = DEFAULT_GEN_WORD_COUNT){
+  const nowTs = Date.now();
+  return (loadWords() || [])
+    .slice()
+    .sort((a,b)=>{
+      const aDue = getSrsDueTs(a);
+      const bDue = getSrsDueTs(b);
+      const aReady = aDue <= nowTs;
+      const bReady = bDue <= nowTs;
+      if(aReady !== bReady) return aReady ? -1 : 1;
+
+      if(aReady && bReady){
+        const overdue = (nowTs - bDue) - (nowTs - aDue);
+        if(overdue !== 0) return overdue;
+      }else{
+        const upcoming = aDue - bDue;
+        if(upcoming !== 0) return upcoming;
+      }
+
+      const sr = getSrsStateRank(a.srsState) - getSrsStateRank(b.srsState);
+      if(sr !== 0) return sr;
+
+      const intervalDiff = (a.srsInterval || 0) - (b.srsInterval || 0);
+      if(intervalDiff !== 0) return intervalDiff;
+
+      const c = (b.count||0) - (a.count||0);
+      return c !== 0 ? c : (b.lastSeen||'').localeCompare(a.lastSeen||'');
+    })
+    .slice(0, n)
+    .map(x => x.display || x.word)
+    .filter(Boolean);
+}
+function getGenerationWords(n = DEFAULT_GEN_WORD_COUNT){
+  const count = clampTargetWordCount(n);
+  const mode = getWordSelectionMode();
+  return mode === WORD_MODE_SRS ? getTopNWordsSRS(count) : getTopNWordsLocal(count);
 }
 
 function buildVariantPattern(w){
@@ -2633,6 +2961,8 @@ function bindStoryUI(){
   const topicInput = $('#customTopic');
   const providerSel = $('#providerSelect');
   const modelSel    = $('#modelSelect');
+  const wordModeSel = $('#wordModeSelect');
+  const targetWordCountInput = $('#targetWordCount');
 
   const MODEL_OPTIONS = {
     openai: [ 'gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini' ],
@@ -2641,6 +2971,8 @@ function bindStoryUI(){
 
   keyInput.value  = loadOpenAIKey();
   grokInput.value = loadGrokKey();
+  if(wordModeSel) wordModeSel.value = loadWordMode();
+  if(targetWordCountInput) targetWordCountInput.value = String(loadTargetWordCount());
 
   function refillModelOptions(){
     const p = providerSel.value || 'openai';
@@ -2673,9 +3005,25 @@ function bindStoryUI(){
   genreSel.addEventListener('change', toggleTopic);
   toggleTopic();
 
+  const syncWordMode = ()=>{
+    if(!wordModeSel) return;
+    wordModeSel.value = saveWordMode(wordModeSel.value);
+    renderWordList();
+  };
+  const syncWordCount = ()=>{
+    if(!targetWordCountInput) return;
+    const normalized = saveTargetWordCount(targetWordCountInput.value);
+    targetWordCountInput.value = String(normalized);
+  };
+  wordModeSel?.addEventListener('change', syncWordMode);
+  targetWordCountInput?.addEventListener('change', syncWordCount);
+  targetWordCountInput?.addEventListener('blur', syncWordCount);
+
   saveBtn.addEventListener('click', ()=>{
     saveOpenAIKey(keyInput.value);
     saveGrokKey(grokInput.value);
+    syncWordMode();
+    syncWordCount();
     alert('已儲存到本機（localStorage）');
   });
 
@@ -2693,11 +3041,15 @@ function bindStoryUI(){
       const type  = genreSel.value;
       const customTopic = (topicInput?.value || '').trim();
       const targetCount = getTargetLen();
+      const targetWordCount = getTargetWordCount();
+      const mode = getWordSelectionMode();
+      saveWordMode(mode);
+      saveTargetWordCount(targetWordCount);
       if((type === 'custom' || type === 'mature_18') && !customTopic){
         alert('請輸入主題。');
         return;
       }
-      let words = getTopNWordsLocal(15);
+      let words = getGenerationWords(targetWordCount);
       if(words.length === 0){
         const text = await generateContentWithOpenAI({ lang, type, words: [], level, customTopic, targetCount });
         $('#src').value = text; compile(); saveActiveSlot();
@@ -2712,9 +3064,10 @@ function bindStoryUI(){
         if(missing.length){ alert('注意：仍未成功納入：\n' + missing.join(', ')); }
       }
       $('#src').value = text; compile(); saveActiveSlot();
+      const modeText = mode === WORD_MODE_SRS ? 'SRS 到期' : '高頻';
       alert(type === 'custom'
-        ? '已依自訂主題生成內容，並盡力納入前 15 個高頻單字（允許詞形變化/派生）。'
-        : '已生成內容並盡力納入前 15 個高頻單字（允許詞形變化/派生）。');
+        ? `已依自訂主題生成內容，並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`
+        : `已生成內容並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`);
     }catch(err){
       console.error(err); alert('發生錯誤：' + err.message);
     }finally{

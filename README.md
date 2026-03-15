@@ -9,10 +9,10 @@
 
 ## 功能概覽
 - 五格書架: 每格存文章、標題與捲動進度。
-- 閱讀區: 分詞渲染，點字查詢與統計; 雙擊扣 2 並標紅。
+- 閱讀區: 分詞渲染，點字查詢與統計；可切換「次數」或「SRS」模式（SRS 下單擊=Again、雙擊=Good）。
 - 生字本: 依語言分庫，搜尋、匯入/匯出 CSV/JSON。
 - 高頻標示: 前 15 藍框、16-50 綠框; 扣分字停止高頻統計。
-- AI 協助: 單字字典卡、文章生成、句子解析與追問。
+- AI 協助: 單字字典卡、文章生成（可設定單字策略與截取數量）、句子解析與追問。
 - TTS: OpenAI `audio/speech` 產生段落語音，支援男女聲與語速。
 - 沉浸模式: 全螢幕閱讀。
 - 遠端同步: Cloud Run proxy -> GAS Web App。
@@ -27,7 +27,7 @@
 
 ## 使用流程（重點）
 - 貼上文章 -> 產生可點文字 -> 點字加入生字本，顯示字典卡。
-- 生成內容: 依程度/語言/類型產文; 優先使用生字本前 15 個。
+- 生成內容: 依程度/語言/類型產文；可選擇依「次數」或「SRS 到期」挑字，並可設定截取單字數量（預設 15）。
 - 框選句子 -> 翻譯與文法。
 - 生成語音 -> 段落播放鍵 + 朗讀全部。
 - 進度自動存書格，也可按「讀取進度」還原。
@@ -40,13 +40,15 @@
 - 生字本佇列: `word-noter.queue.{en|de|fr}.v1`
 - 字典開關: `word-noter.dict.off`
 - 金鑰: `word-noter.openai.key` / `word-noter.grok.key`
+- 生成單字策略: `word-noter.gen.word-mode.v1`（`count` / `srs`）
+- 生成截取單字數: `word-noter.gen.word-count.v1`
 - 遠端同步 ID: `local-text-reader.remote.id`
 
 ## 遠端同步（Cloud Run Proxy）
 - `src/main.js` 的 `API_BASE` 指向你的 Proxy。
 - 同步 ID 會對 `GET/POST ${API_BASE}/api/state?id=<ID>` 讀寫 JSON。
 - `AUTO_REMOTE_SYNC_ENABLED=false`，只在手動按閱讀區「儲存」時上傳; 「立即同步」只拉取遠端。
-- 同步內容: `slots`、`activeSlotId`、當前語言的 `words`。
+- 同步內容: `slots`、`activeSlotId`、當前語言的 `words`、生成偏好（包含單字策略與截取數量）。
 
 ## gas-proxy（Node / Cloud Run）
 - 用途: 隱藏 GAS token，並提供跨網域同步入口。
