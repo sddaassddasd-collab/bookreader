@@ -150,7 +150,7 @@
             </select>
             <input id="customTopic" placeholder="輸入想要生成的主題／風格" class="flex-1" style="display:none">
             <label class="help" for="lengthInput">字數：</label>
-            <input id="lengthInput" type="number" min="100" max="1200" step="50" value="500" class="number">
+            <input id="lengthInput" type="number" min="100" max="2000" step="50" value="500" class="number">
             <label class="help" for="wordModeSelect">詞彙策略：</label>
             <select id="wordModeSelect">
               <option value="count" selected>次數</option>
@@ -160,13 +160,18 @@
             <input id="targetWordCount" type="number" min="1" max="50" step="1" value="15" class="number">
             <button id="saveKey" class="secondary">儲存金鑰（本機）</button>
             <button id="genContent">生成內容</button>
+            <button id="genContent24h" class="secondary">24h 查字生成</button>
           </div>
-          <div class="help">有生字本時會依「詞彙策略」截取指定數量的單字（已畢業字會排除）；無單字時隨機生成。</div>
+          <div class="help">有生字本時會依「詞彙策略」截取指定數量的單字（已畢業字會排除）；無單字時隨機生成。也可按「24h 查字生成」把最近 24 小時查過的單字全部帶入文章。</div>
         </div>
 
         <div class="search">
           <input id="q" placeholder="搜尋生字或備註..." />
           <button id="qClear" class="secondary">清除</button>
+        </div>
+        <div class="word-stats-wrap">
+          <div id="wordStats" class="word-stats" aria-live="polite"></div>
+          <div class="help">點統計卡可篩選，再點一次可取消篩選。</div>
         </div>
 
         <div id="wordList" class="list"></div>

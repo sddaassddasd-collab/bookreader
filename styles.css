@@ -126,6 +126,41 @@ button:active{transform:translateY(1px)}
 .search input, .kblock input, .kblock select{
   flex:1;background:#0b1220;border:1px solid var(--border);border-radius:12px;color:var(--fg);padding:10px 12px
 }
+.word-stats-wrap{margin-top:8px}
+.word-stats{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+.word-stats .stat-card{
+  background:#0b1220;
+  color:var(--fg);
+  border:1px solid var(--border);
+  border-radius:12px;
+  box-shadow:none;
+  padding:8px 10px;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  align-items:flex-start;
+}
+.word-stats .stat-card:hover{
+  border-color:rgba(56,189,248,.45);
+}
+.word-stats .stat-card.active{
+  border-color:rgba(56,189,248,.7);
+  background:linear-gradient(135deg, rgba(56,189,248,.16), rgba(11,18,32,.85));
+}
+.word-stats .stat-k{
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.2;
+}
+.word-stats .stat-v{
+  font-size:20px;
+  font-variant-numeric:tabular-nums;
+  line-height:1;
+}
 .file-btn input{display:none}
 .kblock{display:flex;flex-direction:column;gap:10px;margin-top:8px}
 .model-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}

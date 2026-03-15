@@ -45,6 +45,7 @@ const SRS_DEFAULT_EASE = 2.5;
 const SRS_MIN_EASE = 1.3;
 const SRS_MAX_EASE = 3.2;
 const SRS_MASTERY_INTERVAL_DAYS = 90;
+const SRS_FAMILIAR_INTERVAL_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const VOICE_MALE = 'verse';
 const VOICE_FEMALE = 'alloy';
@@ -181,6 +182,7 @@ let wordsSaveTimer = null;
 let wordsSavePayload = null;
 let wordUiRenderScheduled = false;
 let activeCardWordKey = '';
+let activeWordFilter = 'all';
 let germanMorphRunId = 0;
 const germanMorphCache = new Map();
 
@@ -1397,7 +1399,7 @@ function getTargetLen(){
   const el = document.getElementById('lengthInput');
   const v = parseInt(el?.value || '500', 10);
   if (!isFinite(v)) return 500;
-  return Math.max(100, Math.min(1200, v));
+  return Math.max(100, Math.min(2000, v));
 }
 function sanitizeWordMode(mode){
   return mode === WORD_MODE_SRS ? WORD_MODE_SRS : WORD_MODE_COUNT;
@@ -1813,6 +1815,10 @@ function parseIsoOrFallback(v, fallback = nowISO()){
   if(Number.isFinite(ts)) return new Date(ts).toISOString();
   return fallback;
 }
+function parseIsoOrEmpty(v){
+  const ts = Date.parse(v || '');
+  return Number.isFinite(ts) ? new Date(ts).toISOString() : '';
+}
 function parseBooleanish(v){
   if(typeof v === 'boolean') return v;
   if(typeof v === 'number') return v === 1;
@@ -1843,6 +1849,7 @@ function normalizeWordEntry(entry = {}, fallbackWord = '', lang = getLang()){
   if(!key) return null;
   const firstSeen = parseIsoOrFallback(entry.firstSeen, nowISO());
   const lastSeen = parseIsoOrFallback(entry.lastSeen, firstSeen);
+  const lastLookupAt = parseIsoOrEmpty(entry.lastLookupAt);
   const count = Math.max(0, Number(entry.count) || 0);
   const srsInterval = Math.max(0, Number(entry.srsInterval) || 0);
   const srsEase = Math.min(SRS_MAX_EASE, Math.max(SRS_MIN_EASE, Number(entry.srsEase) || SRS_DEFAULT_EASE));
@@ -1863,6 +1870,7 @@ function normalizeWordEntry(entry = {}, fallbackWord = '', lang = getLang()){
     count,
     firstSeen,
     lastSeen,
+    lastLookupAt,
     pos: entry.pos || '',
     phon: entry.phon || '',
     defs: Array.isArray(entry.defs) ? entry.defs.filter(Boolean) : [],
@@ -1894,12 +1902,16 @@ function normalizeWordList(rows){
     const latest = incomingTs >= existedTs ? normalized : existed;
     const firstTs = Math.min(Date.parse(existed.firstSeen || '') || Date.now(), Date.parse(normalized.firstSeen || '') || Date.now());
     const lastTs = Math.max(existedTs, incomingTs);
+    const existedLookupTs = Date.parse(existed.lastLookupAt || '') || 0;
+    const incomingLookupTs = Date.parse(normalized.lastLookupAt || '') || 0;
+    const lastLookupTs = Math.max(existedLookupTs, incomingLookupTs);
     merged.set(normalized.word, {
       ...latest,
       word: normalized.word,
       count: Math.max(0, (existed.count || 0) + (normalized.count || 0)),
       firstSeen: new Date(firstTs).toISOString(),
       lastSeen: new Date(lastTs || Date.now()).toISOString(),
+      lastLookupAt: lastLookupTs > 0 ? new Date(lastLookupTs).toISOString() : '',
       pos: latest.pos || existed.pos || normalized.pos || '',
       phon: latest.phon || existed.phon || normalized.phon || '',
       defs: Array.from(new Set([...(existed.defs || []), ...(normalized.defs || [])])).filter(Boolean).slice(0, 10),
@@ -1986,6 +1998,7 @@ function upsertWord(word, payload = {}, inc = true){
   const key = normalizeLexemeKey(word, lang);
   if(!key) return;
   const now = nowISO();
+  const lookupAt = parseIsoOrEmpty(payload.lastLookupAt);
   const idx = base.findIndex(x => x.word === key);
   const incomingAliases = new Set();
   if(Array.isArray(payload.aliases)){
@@ -2001,6 +2014,11 @@ function upsertWord(word, payload = {}, inc = true){
     row.phon = payload.phon ?? row.phon;
     row.defs = payload.defs ?? row.defs;
     row.note = payload.note ?? row.note;
+    if(payload.lastLookupAt === ''){
+      row.lastLookupAt = '';
+    }else if(lookupAt){
+      row.lastLookupAt = lookupAt;
+    }
     if(payload.display && (payload.forceDisplay || !row.display || row.display === row.word)){
       row.display = payload.display;
     }
@@ -2012,6 +2030,7 @@ function upsertWord(word, payload = {}, inc = true){
       display: payload.display || (lang === 'de' ? key : word),
       aliases: Array.from(incomingAliases),
       count: inc ? 1 : 0, firstSeen: now, lastSeen: now,
+      lastLookupAt: lookupAt || '',
       pos: payload.pos || '', phon: payload.phon || '',
       defs: payload.defs || [], note: payload.note || ''
     }, key, lang));
@@ -2692,9 +2711,11 @@ async function processSingleClick(el){
   }
 
   showWordCardSkeleton(display, word);
+  const lookupAt = nowISO();
   upsertWord(word, {
     display: lang === 'de' ? word : display,
-    aliases: [display]
+    aliases: [display],
+    lastLookupAt: lookupAt
   }, shouldCount);
   if(mode === WORD_MODE_SRS){
     applySrsReview(word, 'again');
@@ -2787,22 +2808,99 @@ function formatSrsDueLabel(iso){
   const days = Math.round(hours / 24);
   return `${days} 天後`;
 }
+function sanitizeWordFilter(v){
+  const raw = String(v || 'all').toLowerCase();
+  return (raw === 'learning' || raw === 'today' || raw === 'familiar' || raw === 'mastered')
+    ? raw
+    : 'all';
+}
+function getTodayRangeTs(){
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const startTs = start.getTime();
+  return { startTs, endTs: startTs + DAY_MS };
+}
+function matchesWordFilter(row, filter, todayRange){
+  const mastered = Boolean(row?.isMastered);
+  const interval = Math.max(0, Number(row?.srsInterval) || 0);
+  const lastSeenTs = Date.parse(row?.lastSeen || '');
+  const inToday = Number.isFinite(lastSeenTs) && lastSeenTs >= todayRange.startTs && lastSeenTs < todayRange.endTs;
+  if(filter === 'learning') return !mastered;
+  if(filter === 'today') return inToday;
+  if(filter === 'familiar') return !mastered && interval >= SRS_FAMILIAR_INTERVAL_DAYS;
+  if(filter === 'mastered') return mastered;
+  return true;
+}
+function computeWordStats(rows){
+  const todayRange = getTodayRangeTs();
+  const stats = {
+    learningCount: 0,
+    todayCount: 0,
+    familiarCount: 0,
+    masteredCount: 0,
+    todayRange
+  };
+  (rows || []).forEach((row)=>{
+    const mastered = Boolean(row?.isMastered);
+    const interval = Math.max(0, Number(row?.srsInterval) || 0);
+    const lastSeenTs = Date.parse(row?.lastSeen || '');
+    if(mastered) stats.masteredCount += 1;
+    else stats.learningCount += 1;
+    if(Number.isFinite(lastSeenTs) && lastSeenTs >= todayRange.startTs && lastSeenTs < todayRange.endTs){
+      stats.todayCount += 1;
+    }
+    if(!mastered && interval >= SRS_FAMILIAR_INTERVAL_DAYS){
+      stats.familiarCount += 1;
+    }
+  });
+  return stats;
+}
+function renderWordStats(stats){
+  const box = document.getElementById('wordStats');
+  if(!box) return;
+  const cards = [
+    { key: 'learning', label: '目前學習', value: stats.learningCount },
+    { key: 'today', label: '今日學習', value: stats.todayCount },
+    { key: 'familiar', label: `熟悉（${SRS_FAMILIAR_INTERVAL_DAYS}天+）`, value: stats.familiarCount },
+    { key: 'mastered', label: '畢業單字', value: stats.masteredCount }
+  ];
+  box.innerHTML = cards.map((card)=>`
+    <button type="button"
+      class="stat-card${activeWordFilter === card.key ? ' active' : ''}"
+      data-filter="${card.key}"
+      aria-pressed="${activeWordFilter === card.key ? 'true' : 'false'}">
+      <span class="stat-k">${card.label}</span>
+      <span class="stat-v">${card.value}</span>
+    </button>
+  `).join('');
+}
 function renderWordList(){
   const box = $('#wordList');
   const q = ($('#q').value || '').trim().toLowerCase();
   const mode = getWordSelectionMode();
+  activeWordFilter = sanitizeWordFilter(activeWordFilter);
   const all = loadWords()
     .slice()
     .sort((a,b)=> (b.lastSeen||'').localeCompare(a.lastSeen||''));
-  const list = q ? all.filter(x =>
-        x.word.includes(q)
-        || (x.display || '').toLowerCase().includes(q)
-        || (Array.isArray(x.aliases) && x.aliases.some(a => String(a || '').toLowerCase().includes(q)))
-        || (x.note||'').toLowerCase().includes(q)
-      ) : all;
+  const stats = computeWordStats(all);
+  renderWordStats(stats);
+  let list = activeWordFilter === 'all'
+    ? all
+    : all.filter(row => matchesWordFilter(row, activeWordFilter, stats.todayRange));
+  if(q){
+    list = list.filter(x =>
+      x.word.includes(q)
+      || (x.display || '').toLowerCase().includes(q)
+      || (Array.isArray(x.aliases) && x.aliases.some(a => String(a || '').toLowerCase().includes(q)))
+      || (x.note||'').toLowerCase().includes(q)
+    );
+  }
 
   if(!list.length){
-    box.innerHTML = '<div class="empty">目前沒有生字。</div>';
+    const hasFilter = activeWordFilter !== 'all' || Boolean(q);
+    box.innerHTML = hasFilter
+      ? '<div class="empty">沒有符合條件的生字。</div>'
+      : '<div class="empty">目前沒有生字。</div>';
     return;
   }
   box.innerHTML = list.map(x=>{
@@ -2884,7 +2982,8 @@ window.focusWord = async function(word){
       upsertWord(key, {
         ...info,
         display: isDE ? key : (x.display || key),
-        aliases: x.aliases || []
+        aliases: x.aliases || [],
+        lastLookupAt: nowISO()
       }, false);
       defsBox.innerHTML = info.defs.map(d=>`<li>${d}</li>`).join('');
     } else {
@@ -2904,14 +3003,14 @@ function download(filename, text){
 function exportCSV(){
   const rows = loadWords();
   const head = [
-    'word','display','count','firstSeen','lastSeen',
+    'word','display','count','firstSeen','lastSeen','lastLookupAt',
     'srsState','srsDueAt','srsInterval','srsEase','srsStreak','srsLapses',
     'isMastered','masteredAt',
     'pos','phon','defs','note'
   ];
   const csv = [head.join(',')].concat(rows.map(r=>{
     const vals = [
-      r.word, r.display||'', r.count||0, r.firstSeen||'', r.lastSeen||'',
+      r.word, r.display||'', r.count||0, r.firstSeen||'', r.lastSeen||'', r.lastLookupAt||'',
       r.srsState||'new', r.srsDueAt||'', r.srsInterval||0, r.srsEase||SRS_DEFAULT_EASE, r.srsStreak||0, r.srsLapses||0,
       r.isMastered ? 1 : 0, r.masteredAt || '',
       r.pos||'', r.phon||'', (r.defs||[]).join(' | '), r.note||''
@@ -2987,6 +3086,7 @@ function importCSVText(csvText){
   const head = grid[0].map(x => x.toLowerCase());
   const hasHeader = [
     'word','display','pos','phon','defs','note','count',
+    'lastlookupat',
     'srsstate','srsdueat','srsinterval','srsease','srsstreak','srslapses',
     'ismastered','masteredat'
   ].some(k => head.includes(k));
@@ -3013,6 +3113,7 @@ function importCSVText(csvText){
     const defsRaw = hasHeader ? (r[idx('defs')] || '').trim() : '';
     const note = hasHeader ? (r[idx('note')] || '').trim() : '';
     const countCsv = hasHeader ? (parseInt(r[idx('count')] || '0',10) || 0) : 0;
+    const lastLookupAtCsv = hasHeader ? parseIsoOrEmpty((r[idx('lastlookupat')] || '').trim()) : '';
     const srsStateCsv = hasHeader ? normalizeSrsState((r[idx('srsstate')] || '').trim().toLowerCase()) : 'new';
     const srsDueAtCsv = hasHeader ? (r[idx('srsdueat')] || '').trim() : '';
     const srsIntervalCsv = hasHeader ? (parseFloat(r[idx('srsinterval')] || '0') || 0) : 0;
@@ -3044,6 +3145,7 @@ function importCSVText(csvText){
         defs: defs.length ? defs : (baseRow.defs || []),
         note: note || baseRow.note || '',
         count: Math.max(0, (baseRow.count||0)) + 5 + (countCsv||0),
+        lastLookupAt: lastLookupAtCsv || baseRow.lastLookupAt || '',
         srsState: hasSrsFields ? srsStateCsv : baseRow.srsState,
         srsDueAt: hasSrsFields ? parseIsoOrFallback(srsDueAtCsv, baseRow.srsDueAt) : baseRow.srsDueAt,
         srsInterval: hasSrsFields ? Math.max(0, srsIntervalCsv || 0) : baseRow.srsInterval,
@@ -3067,6 +3169,7 @@ function importCSVText(csvText){
         count: 5 + (countCsv||0),
         firstSeen: now,
         lastSeen: now,
+        lastLookupAt: lastLookupAtCsv || '',
         srsState: hasSrsFields ? srsStateCsv : 'new',
         srsDueAt: hasSrsFields ? parseIsoOrFallback(srsDueAtCsv, now) : now,
         srsInterval: hasSrsFields ? Math.max(0, srsIntervalCsv || 0) : 0,
@@ -3204,6 +3307,24 @@ function getGenerationWords(n = DEFAULT_GEN_WORD_COUNT){
   const count = clampTargetWordCount(n);
   const mode = getWordSelectionMode();
   return mode === WORD_MODE_SRS ? getTopNWordsSRS(count) : getTopNWordsLocal(count);
+}
+function getLookupTs(row){
+  const ts = Date.parse(row?.lastLookupAt || '');
+  return Number.isFinite(ts) ? ts : 0;
+}
+function getWordsLookedUpLast24h(){
+  const sinceTs = Date.now() - DAY_MS;
+  return (loadWords().filter(x => !x.isMastered) || [])
+    .filter(row => getLookupTs(row) >= sinceTs)
+    .slice()
+    .sort((a,b)=>{
+      const lookupDiff = getLookupTs(b) - getLookupTs(a);
+      if(lookupDiff !== 0) return lookupDiff;
+      const c = (b.count||0) - (a.count||0);
+      return c !== 0 ? c : (b.lastSeen||'').localeCompare(a.lastSeen||'');
+    })
+    .map(x => x.display || x.word)
+    .filter(Boolean);
 }
 
 function buildVariantPattern(w){
@@ -3669,6 +3790,7 @@ function bindStoryUI(){
   const grokInput  = $('#grokKey');
   const saveBtn    = $('#saveKey');
   const genBtn     = $('#genContent');
+  const gen24hBtn  = $('#genContent24h');
   const levelSel   = $('#levelSelect');
   const genreSel   = $('#genreSelect');
   const topicInput = $('#customTopic');
@@ -3740,9 +3862,20 @@ function bindStoryUI(){
     alert('已儲存到本機（localStorage）');
   });
 
-  genBtn.addEventListener('click', async ()=>{
+  async function runGeneration({
+    triggerBtn,
+    busyText = '生成中…',
+    wordsProvider = () => [],
+    allowRandomWhenEmpty = false,
+    emptyAlert = '目前沒有符合條件的單字。',
+    successAlertBuilder
+  } = {}){
+    const idleText = triggerBtn?.textContent || '生成內容';
     try{
-      genBtn.disabled = true; genBtn.textContent = '生成中…';
+      if(triggerBtn){
+        triggerBtn.disabled = true;
+        triggerBtn.textContent = busyText;
+      }
       const provider = getSelectedProvider();
       const usingKey = (provider === 'grok')
         ? (grokInput.value.trim() || loadGrokKey())
@@ -3762,13 +3895,22 @@ function bindStoryUI(){
         alert('請輸入主題。');
         return;
       }
-      let words = getGenerationWords(targetWordCount);
+
+      let words = wordsProvider({ targetWordCount, mode, lang });
+      if(!Array.isArray(words)) words = [];
+      words = Array.from(new Set(words.map(w => String(w || '').trim()).filter(Boolean)));
+
       if(words.length === 0){
-        const text = await generateContentWithOpenAI({ lang, type, words: [], level, customTopic, targetCount });
-        $('#src').value = text; compile(); saveActiveSlot();
-        alert('已生成隨機內容（目前生字本沒有單字）。');
+        if(allowRandomWhenEmpty){
+          const text = await generateContentWithOpenAI({ lang, type, words: [], level, customTopic, targetCount });
+          $('#src').value = text; compile(); saveActiveSlot();
+          alert(emptyAlert);
+        }else{
+          alert(emptyAlert);
+        }
         return;
       }
+
       let text = await generateContentWithOpenAI({ lang, type, words, level, customTopic, targetCount });
       let missing = await wordsMissingFrom(text, words);
       if(missing.length){
@@ -3777,15 +3919,50 @@ function bindStoryUI(){
         if(missing.length){ alert('注意：仍未成功納入：\n' + missing.join(', ')); }
       }
       $('#src').value = text; compile(); saveActiveSlot();
-      const modeText = mode === WORD_MODE_SRS ? 'SRS 到期' : '高頻';
-      alert(type === 'custom'
-        ? `已依自訂主題生成內容，並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`
-        : `已生成內容並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`);
+      if(typeof successAlertBuilder === 'function'){
+        alert(successAlertBuilder({ words, mode, type, targetWordCount }));
+      }else{
+        const modeText = mode === WORD_MODE_SRS ? 'SRS 到期' : '高頻';
+        alert(type === 'custom'
+          ? `已依自訂主題生成內容，並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`
+          : `已生成內容並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`);
+      }
     }catch(err){
       console.error(err); alert('發生錯誤：' + err.message);
     }finally{
-      genBtn.disabled = false; genBtn.textContent = '生成內容';
+      if(triggerBtn){
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = idleText;
+      }
     }
+  }
+
+  genBtn.addEventListener('click', async ()=>{
+    await runGeneration({
+      triggerBtn: genBtn,
+      busyText: '生成中…',
+      wordsProvider: ({ targetWordCount }) => getGenerationWords(targetWordCount),
+      allowRandomWhenEmpty: true,
+      emptyAlert: '已生成隨機內容（目前生字本沒有單字）。',
+      successAlertBuilder: ({ mode, type, targetWordCount })=>{
+        const modeText = mode === WORD_MODE_SRS ? 'SRS 到期' : '高頻';
+        return type === 'custom'
+          ? `已依自訂主題生成內容，並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`
+          : `已生成內容並盡力納入前 ${targetWordCount} 個${modeText}單字（允許詞形變化/派生）。`;
+      }
+    });
+  });
+
+  gen24hBtn?.addEventListener('click', async ()=>{
+    await runGeneration({
+      triggerBtn: gen24hBtn,
+      busyText: '24h 生成中…',
+      wordsProvider: () => getWordsLookedUpLast24h(),
+      allowRandomWhenEmpty: false,
+      emptyAlert: '目前沒有 24 小時內查過的單字。',
+      successAlertBuilder: ({ words })=>
+        `已依 24 小時內查過的 ${words.length} 個單字生成內容（允許詞形變化/派生）。`
+    });
   });
 }
 
@@ -3838,10 +4015,18 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
   });
   $('#resetWords')?.addEventListener('click', ()=>{
     if(confirm('確定要清空生字本？此動作無法復原。')){
+      activeWordFilter = 'all';
       saveWords([]); renderWordList(); applyHFClassesToReader({ force:true });
       deductedWords.clear();
       wordNodeMap.forEach(set => set.forEach(el => el.classList.remove('deducted')));
     }
+  });
+  $('#wordStats')?.addEventListener('click', (e)=>{
+    const target = e.target?.closest?.('.stat-card[data-filter]');
+    if(!target) return;
+    const next = sanitizeWordFilter(target.dataset.filter);
+    activeWordFilter = (activeWordFilter === next) ? 'all' : next;
+    renderWordList();
   });
   $('#q')?.addEventListener('input', renderWordList);
   $('#qClear')?.addEventListener('click', ()=>{ $('#q').value=''; renderWordList(); });
