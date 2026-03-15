@@ -39,6 +39,7 @@ const MAX_GEN_WORD_COUNT = 50;
 const SRS_DEFAULT_EASE = 2.5;
 const SRS_MIN_EASE = 1.3;
 const SRS_MAX_EASE = 3.2;
+const SRS_MASTERY_INTERVAL_DAYS = 90;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const VOICE_MALE = 'verse';
 const VOICE_FEMALE = 'alloy';
@@ -1244,6 +1245,12 @@ function parseIsoOrFallback(v, fallback = nowISO()){
   if(Number.isFinite(ts)) return new Date(ts).toISOString();
   return fallback;
 }
+function parseBooleanish(v){
+  if(typeof v === 'boolean') return v;
+  if(typeof v === 'number') return v === 1;
+  const t = String(v || '').trim().toLowerCase();
+  return t === '1' || t === 'true' || t === 'yes' || t === 'y';
+}
 function normalizeSrsState(v){
   return (v === 'learning' || v === 'review' || v === 'new') ? v : 'new';
 }
@@ -1259,6 +1266,8 @@ function normalizeWordEntry(entry = {}, fallbackWord = ''){
   const srsDueAt = parseIsoOrFallback(entry.srsDueAt, fallbackDue);
   const srsStateRaw = normalizeSrsState(entry.srsState);
   const srsState = srsStateRaw === 'new' && srsInterval > 0 ? 'review' : srsStateRaw;
+  const isMastered = parseBooleanish(entry.isMastered);
+  const masteredAt = isMastered ? parseIsoOrFallback(entry.masteredAt, lastSeen) : '';
   return {
     word: key,
     display: entry.display || entry.word || fallbackWord || key,
@@ -1274,7 +1283,9 @@ function normalizeWordEntry(entry = {}, fallbackWord = ''){
     srsDueAt,
     srsState,
     srsStreak: Math.max(0, parseInt(entry.srsStreak || '0', 10) || 0),
-    srsLapses: Math.max(0, parseInt(entry.srsLapses || '0', 10) || 0)
+    srsLapses: Math.max(0, parseInt(entry.srsLapses || '0', 10) || 0),
+    isMastered,
+    masteredAt
   };
 }
 function normalizeWordList(rows){
@@ -1412,6 +1423,9 @@ function applySrsReview(word, rating = 'good'){
 
   const row = normalizeWordEntry(base[idx], key);
   const nowTs = Date.now();
+  const dueTs = Date.parse(row.srsDueAt || '');
+  const wasDue = !Number.isFinite(dueTs) || dueTs <= nowTs;
+  const hadLongInterval = (row.srsInterval || 0) >= SRS_MASTERY_INTERVAL_DAYS;
   let ease = row.srsEase || SRS_DEFAULT_EASE;
   let interval = Math.max(0, row.srsInterval || 0);
   let streak = Math.max(0, row.srsStreak || 0);
@@ -1425,6 +1439,8 @@ function applySrsReview(word, rating = 'good'){
     streak = 0;
     lapses += 1;
     state = 'learning';
+    row.isMastered = false;
+    row.masteredAt = '';
   }else if(score === 'easy'){
     ease = Math.min(SRS_MAX_EASE, ease + 0.15);
     interval = interval <= 0 ? 3 : Math.max(interval + 1, interval * (ease + 0.35));
@@ -1453,6 +1469,11 @@ function applySrsReview(word, rating = 'good'){
   row.srsLapses = lapses;
   row.srsState = state;
   row.srsDueAt = new Date(nowTs + (row.srsInterval * DAY_MS)).toISOString();
+  if(score === 'good' && wasDue && hadLongInterval){
+    row.isMastered = true;
+    row.masteredAt = nowISO();
+  }
+  if(!row.isMastered) row.masteredAt = '';
   row.lastSeen = nowISO();
   base[idx] = row;
   saveWords(base);
@@ -2157,11 +2178,17 @@ function renderWordList(){
     return;
   }
   box.innerHTML = list.map(x=>{
-    const badgeText = mode === WORD_MODE_SRS
+    const mastered = Boolean(x.isMastered);
+    let badgeText = mode === WORD_MODE_SRS
       ? `${formatSrsDueLabel(x.srsDueAt)} · ${x.srsState || 'new'}`
       : `×${x.count||0}`;
+    if(mastered){
+      badgeText = mode === WORD_MODE_SRS ? '已畢業' : `×${x.count||0} · 已畢業`;
+    }
     const srsMeta = mode === WORD_MODE_SRS
-      ? `<div class="t">SRS：${(x.srsInterval||0).toFixed(2)} 天 · E ${Number(x.srsEase||SRS_DEFAULT_EASE).toFixed(2)} · 失誤 ${x.srsLapses||0}</div>`
+      ? (mastered
+        ? `<div class="t">SRS：已通過 ${SRS_MASTERY_INTERVAL_DAYS} 天記憶檢核</div>`
+        : `<div class="t">SRS：${(x.srsInterval||0).toFixed(2)} 天 · E ${Number(x.srsEase||SRS_DEFAULT_EASE).toFixed(2)} · 失誤 ${x.srsLapses||0}</div>`)
       : '';
     return `
     <div class="item" data-w="${x.word}">
@@ -2241,12 +2268,14 @@ function exportCSV(){
   const head = [
     'word','display','count','firstSeen','lastSeen',
     'srsState','srsDueAt','srsInterval','srsEase','srsStreak','srsLapses',
+    'isMastered','masteredAt',
     'pos','phon','defs','note'
   ];
   const csv = [head.join(',')].concat(rows.map(r=>{
     const vals = [
       r.word, r.display||'', r.count||0, r.firstSeen||'', r.lastSeen||'',
       r.srsState||'new', r.srsDueAt||'', r.srsInterval||0, r.srsEase||SRS_DEFAULT_EASE, r.srsStreak||0, r.srsLapses||0,
+      r.isMastered ? 1 : 0, r.masteredAt || '',
       r.pos||'', r.phon||'', (r.defs||[]).join(' | '), r.note||''
     ].map(v=> `"${String(v).replace(/"/g,'""')}"`);
     return vals.join(',');
@@ -2311,7 +2340,8 @@ function importCSVText(csvText){
   const head = grid[0].map(x => x.toLowerCase());
   const hasHeader = [
     'word','display','pos','phon','defs','note','count',
-    'srsstate','srsdueat','srsinterval','srsease','srsstreak','srslapses'
+    'srsstate','srsdueat','srsinterval','srsease','srsstreak','srslapses',
+    'ismastered','masteredat'
   ].some(k => head.includes(k));
   const base = loadWords();
   const map = new Map(base.map(x => [x.word, x]));
@@ -2340,9 +2370,14 @@ function importCSVText(csvText){
     const srsEaseCsv = hasHeader ? (parseFloat(r[idx('srsease')] || '0') || 0) : 0;
     const srsStreakCsv = hasHeader ? (parseInt(r[idx('srsstreak')] || '0', 10) || 0) : 0;
     const srsLapsesCsv = hasHeader ? (parseInt(r[idx('srslapses')] || '0', 10) || 0) : 0;
+    const isMasteredCsv = hasHeader ? parseBooleanish((r[idx('ismastered')] || '').trim()) : false;
+    const masteredAtCsv = hasHeader ? (r[idx('masteredat')] || '').trim() : '';
     const hasSrsFields = hasHeader && (
       idx('srsstate') >= 0 || idx('srsdueat') >= 0 || idx('srsinterval') >= 0 ||
       idx('srsease') >= 0 || idx('srsstreak') >= 0 || idx('srslapses') >= 0
+    );
+    const hasMasteredFields = hasHeader && (
+      idx('ismastered') >= 0 || idx('masteredat') >= 0
     );
     const defs = defsRaw
       ? defsRaw.split('|').map(s => s.trim()).filter(Boolean)
@@ -2367,6 +2402,10 @@ function importCSVText(csvText){
           : baseRow.srsEase,
         srsStreak: hasSrsFields ? Math.max(0, srsStreakCsv || 0) : baseRow.srsStreak,
         srsLapses: hasSrsFields ? Math.max(0, srsLapsesCsv || 0) : baseRow.srsLapses,
+        isMastered: hasMasteredFields ? isMasteredCsv : baseRow.isMastered,
+        masteredAt: hasMasteredFields
+          ? (isMasteredCsv ? parseIsoOrFallback(masteredAtCsv, now) : '')
+          : baseRow.masteredAt,
         lastSeen: now
       });
       updated++;
@@ -2385,6 +2424,10 @@ function importCSVText(csvText){
           : SRS_DEFAULT_EASE,
         srsStreak: hasSrsFields ? Math.max(0, srsStreakCsv || 0) : 0,
         srsLapses: hasSrsFields ? Math.max(0, srsLapsesCsv || 0) : 0,
+        isMastered: hasMasteredFields ? isMasteredCsv : false,
+        masteredAt: hasMasteredFields
+          ? (isMasteredCsv ? parseIsoOrFallback(masteredAtCsv, now) : '')
+          : '',
         pos, phon, defs, note
       });
       added++;
@@ -2454,7 +2497,7 @@ async function doChat({ provider, apiKey, model, messages, temperature=0.7 }) {
 }
 
 function getTopNWordsLocal(n = DEFAULT_GEN_WORD_COUNT){
-  const all = loadWords();
+  const all = loadWords().filter(x => !x.isMastered);
   return (all||[])
     .slice()
     .sort((a,b)=>{
@@ -2476,7 +2519,7 @@ function getSrsStateRank(state){
 }
 function getTopNWordsSRS(n = DEFAULT_GEN_WORD_COUNT){
   const nowTs = Date.now();
-  return (loadWords() || [])
+  return (loadWords().filter(x => !x.isMastered) || [])
     .slice()
     .sort((a,b)=>{
       const aDue = getSrsDueTs(a);

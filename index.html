@@ -65,7 +65,7 @@
               <option value="female">女</option>
             </select>
           </div>
-          <div class="help">次數模式：雙擊某字可扣 1；SRS 模式：單擊視為 Again（不會）、雙擊視為 Good（已會）。扣分字會標紅，重新產生會恢復。前 15 藍框、16–50 綠框。段落喇叭在「生成語音」後才出現。</div>
+          <div class="help">次數模式：雙擊某字可扣 1；SRS 模式：單擊視為 Again（不會）、雙擊視為 Good（已會）。SRS 若在 90 天間隔到期時仍答 Good，該字會畢業並不再納入生成詞彙。扣分字會標紅，重新產生會恢復。前 15 藍框、16–50 綠框。段落喇叭在「生成語音」後才出現。</div>
         </div>
 
         <div class="panel reader-wrap">
@@ -161,7 +161,7 @@
             <button id="saveKey" class="secondary">儲存金鑰（本機）</button>
             <button id="genContent">生成內容</button>
           </div>
-          <div class="help">有生字本時會依「詞彙策略」截取指定數量的單字；無單字時隨機生成。</div>
+          <div class="help">有生字本時會依「詞彙策略」截取指定數量的單字（已畢業字會排除）；無單字時隨機生成。</div>
         </div>
 
         <div class="search">
