@@ -25,8 +25,10 @@ const AUTO_REMOTE_SYNC_ENABLED = false; // 僅手動按「儲存」時才上傳
 const REMOTE_DEBOUNCE_MS = 1000;
 const UDPIPE_ENDPOINT = 'https://lindat.mff.cuni.cz/services/udpipe/api/process';
 const UDPIPE_MODEL_DE = 'german-hdt-ud-2.12-230717';
-const UDPIPE_TIMEOUT_MS = 12000;
+const UDPIPE_TIMEOUT_MS = 25000;
 const GERMAN_MORPH_CACHE_MAX = 20;
+const GERMAN_MORPH_CHUNK_MAX_CHARS = 6000;
+const MORPH_PROXY_DISABLE_MS = 10 * 60 * 1000;
 const GERMAN_MORPH_DB_NAME = 'word-noter.de-morph-cache.v1';
 const GERMAN_MORPH_DB_STORE = 'entries';
 const GERMAN_MORPH_DB_VERSION = 1;
@@ -42,6 +44,7 @@ const OPENAI_KEY_STORAGE = 'word-noter.openai.key';
 const GROK_KEY_STORAGE = 'word-noter.grok.key';
 const WORD_MODE_STORAGE = 'word-noter.gen.word-mode.v1';
 const WORD_COUNT_STORAGE = 'word-noter.gen.word-count.v1';
+const MORPH_PROXY_DISABLED_UNTIL_KEY = 'word-noter.morph.proxy.disabled-until.v1';
 const WORD_MODE_COUNT = 'count';
 const WORD_MODE_SRS = 'srs';
 const DEFAULT_GEN_WORD_COUNT = 15;
@@ -193,6 +196,7 @@ let germanMorphRunId = 0;
 const germanMorphCache = new Map();
 let germanMorphDbPromise = null;
 let germanMorphDbDisabled = false;
+let morphProxyDisabledUntil = loadMorphProxyDisabledUntil();
 
 const INITIAL_SEGMENTS = 32;
 const MAX_RENDERED_SEGMENTS = 140;
@@ -860,6 +864,139 @@ function rememberGermanMorphCache(key, tokens){
     germanMorphCache.delete(first);
   }
 }
+function loadMorphProxyDisabledUntil(){
+  try{
+    const raw = Number(localStorage.getItem(MORPH_PROXY_DISABLED_UNTIL_KEY));
+    if(Number.isFinite(raw) && raw > Date.now()) return raw;
+  }catch{
+    // ignore
+  }
+  return 0;
+}
+function saveMorphProxyDisabledUntil(ts){
+  try{
+    if(ts > 0){
+      localStorage.setItem(MORPH_PROXY_DISABLED_UNTIL_KEY, String(Math.floor(ts)));
+    }else{
+      localStorage.removeItem(MORPH_PROXY_DISABLED_UNTIL_KEY);
+    }
+  }catch{
+    // ignore
+  }
+}
+function canUseMorphProxy(){
+  if(!MORPH_PROXY_ENDPOINT) return false;
+  if(morphProxyDisabledUntil > 0 && Date.now() >= morphProxyDisabledUntil){
+    morphProxyDisabledUntil = 0;
+    saveMorphProxyDisabledUntil(0);
+  }
+  return Date.now() >= morphProxyDisabledUntil;
+}
+function shouldDisableMorphProxy(err){
+  const msg = String(err?.message || err || '').toLowerCase();
+  if(!msg) return false;
+  return msg.includes('failed to fetch')
+    || msg.includes('networkerror')
+    || msg.includes('load failed')
+    || msg.includes('cors')
+    || msg.includes('http 404')
+    || msg.includes('cannot options /api/morph')
+    || msg.includes('cannot post /api/morph');
+}
+function markMorphProxyTemporarilyDisabled(err){
+  if(morphProxyDisabledUntil > Date.now()) return;
+  morphProxyDisabledUntil = Date.now() + MORPH_PROXY_DISABLE_MS;
+  saveMorphProxyDisabledUntil(morphProxyDisabledUntil);
+  const reason = String(err?.message || err || 'unknown error');
+  console.warn(
+    `Morph proxy temporarily disabled for ${Math.round(MORPH_PROXY_DISABLE_MS / 60000)} min: ${reason}`
+  );
+}
+function splitHardByChars(text, maxChars = GERMAN_MORPH_CHUNK_MAX_CHARS){
+  const raw = String(text || '').trim();
+  if(!raw) return [];
+  const out = [];
+  for(let i = 0; i < raw.length; i += maxChars){
+    const part = raw.slice(i, i + maxChars).trim();
+    if(part) out.push(part);
+  }
+  return out;
+}
+function splitTextToSentences(text){
+  const raw = String(text || '').trim();
+  if(!raw) return [];
+  const parts = raw.match(/[^.!?。！？\n]+[.!?。！？]?/g);
+  if(!parts || !parts.length) return [raw];
+  return parts.map((s)=> s.trim()).filter(Boolean);
+}
+function appendChunkedPiece(out, piece, maxChars){
+  const text = String(piece || '').trim();
+  if(!text) return;
+  if(text.length <= maxChars){
+    out.push(text);
+    return;
+  }
+  const sentences = splitTextToSentences(text);
+  if(sentences.length <= 1){
+    splitHardByChars(text, maxChars).forEach((part)=> out.push(part));
+    return;
+  }
+  let buffer = '';
+  sentences.forEach((sentence)=>{
+    if(sentence.length > maxChars){
+      if(buffer){
+        out.push(buffer);
+        buffer = '';
+      }
+      splitHardByChars(sentence, maxChars).forEach((part)=> out.push(part));
+      return;
+    }
+    if(!buffer){
+      buffer = sentence;
+      return;
+    }
+    if((buffer.length + 1 + sentence.length) <= maxChars){
+      buffer += ` ${sentence}`;
+    }else{
+      out.push(buffer);
+      buffer = sentence;
+    }
+  });
+  if(buffer) out.push(buffer);
+}
+function chunkGermanMorphText(text, maxChars = GERMAN_MORPH_CHUNK_MAX_CHARS){
+  const raw = String(text || '').trim();
+  if(!raw) return [];
+  if(raw.length <= maxChars) return [raw];
+  const out = [];
+  const paragraphs = raw.split(/\n{2,}/).map((p)=> p.trim()).filter(Boolean);
+  if(!paragraphs.length) return splitHardByChars(raw, maxChars);
+  let current = '';
+  const flush = ()=>{
+    if(!current) return;
+    out.push(current.trim());
+    current = '';
+  };
+  paragraphs.forEach((para)=>{
+    if(para.length > maxChars){
+      flush();
+      appendChunkedPiece(out, para, maxChars);
+      return;
+    }
+    if(!current){
+      current = para;
+      return;
+    }
+    if((current.length + 2 + para.length) <= maxChars){
+      current += `\n\n${para}`;
+    }else{
+      flush();
+      current = para;
+    }
+  });
+  flush();
+  return out.length ? out : splitHardByChars(raw, maxChars);
+}
 function compactGermanMorphTokens(tokens){
   return (Array.isArray(tokens) ? tokens : [])
     .map((tok)=>({
@@ -1110,15 +1247,34 @@ async function fetchGermanMorphConlluDirect(text){
   }
 }
 async function fetchGermanMorphConllu(text){
-  try{
-    return await fetchGermanMorphConlluViaProxy(text);
-  }catch(proxyErr){
+  let proxyErr = null;
+  if(canUseMorphProxy()){
     try{
-      return await fetchGermanMorphConlluDirect(text);
-    }catch(directErr){
-      throw new Error(`UDPipe unavailable: ${directErr.message || directErr} (proxy: ${proxyErr.message || proxyErr})`);
+      return await fetchGermanMorphConlluViaProxy(text);
+    }catch(err){
+      proxyErr = err;
+      if(shouldDisableMorphProxy(err)){
+        markMorphProxyTemporarilyDisabled(err);
+      }
     }
   }
+  try{
+    return await fetchGermanMorphConlluDirect(text);
+  }catch(directErr){
+    if(proxyErr){
+      throw new Error(`UDPipe unavailable: ${directErr.message || directErr} (proxy: ${proxyErr.message || proxyErr})`);
+    }
+    throw new Error(`UDPipe unavailable: ${directErr.message || directErr}`);
+  }
+}
+async function fetchGermanMorphTokensForText(text){
+  const chunks = chunkGermanMorphText(text, GERMAN_MORPH_CHUNK_MAX_CHARS);
+  const out = [];
+  for(const chunk of chunks){
+    const conllu = await fetchGermanMorphConllu(chunk);
+    out.push(...flattenGermanUdWordTokens(parseUdpipeConllu(conllu)));
+  }
+  return out;
 }
 async function analyzeGermanMorphology(text){
   const key = String(text || '').trim();
@@ -1131,8 +1287,7 @@ async function analyzeGermanMorphology(text){
     rememberGermanMorphCache(key, persistedTokens);
     return persistedTokens;
   }
-  const conllu = await fetchGermanMorphConllu(key);
-  const tokens = compactGermanMorphTokens(flattenGermanUdWordTokens(parseUdpipeConllu(conllu)));
+  const tokens = compactGermanMorphTokens(await fetchGermanMorphTokensForText(key));
   rememberGermanMorphCache(key, tokens);
   saveGermanMorphTokensToDb(key, tokens).catch((err)=>{
     console.warn('Persist german morphology cache failed:', err);

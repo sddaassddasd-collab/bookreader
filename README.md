@@ -114,7 +114,8 @@ function forbidden(){ return ContentService.createTextOutput('forbidden').setRes
   - OpenAI：前端可直接呼叫 `https://api.openai.com/v1/chat/completions`（預設 `gpt-4o-mini`）。
   - Grok：建議透過 `${API_BASE}/api/chat` 由 proxy 轉發到 `https://api.x.ai/v1/chat/completions`（預設 `grok-4`），避免瀏覽器 CORS 被擋。
 - 形態分析（德語）:
-  - 前端優先呼叫 `${API_BASE}/api/morph`；若 proxy 未部署，會 fallback 直連 `https://lindat.mff.cuni.cz/services/udpipe/api/process`。
+  - 前端優先呼叫 `${API_BASE}/api/morph`；若 proxy 不可用（含 CORS/404）會暫時停用 proxy，改走直連 `https://lindat.mff.cuni.cz/services/udpipe/api/process`。
+  - 長文會自動分段後逐段分析，以降低單次請求 timeout 機率。
 - TTS: OpenAI `https://api.openai.com/v1/audio/speech`（model `gpt-4o-mini-tts`）。
 
 ## 開發備註
