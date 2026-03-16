@@ -11,6 +11,7 @@
 - 五格書架: 每格存文章、標題與捲動進度。
 - 閱讀區: 分詞渲染，點字查詢與統計；可切換「次數」或「SRS」模式（SRS 下單擊=Again、雙擊=Good）。
 - 德語詞形: 背景使用 UDPipe 進行 lemma/POS/依存分析，合併動詞人稱時態、名詞單複數、形容詞/副詞詞形，並辨識可分離動詞。
+- 德語詞形快取: 分析結果會寫入 IndexedDB（以語言+內容雜湊為鍵），重開頁面仍可重用，減少長文重跑時間。
 - 生字本: 依語言分庫，搜尋、匯入/匯出 CSV/JSON。
 - 生字統計: 顯示「目前學習 / 今日學習 / 熟悉（30天+）/ 畢業」並可點擊篩選清單。
 - 高頻標示: 前 15 藍框、16-50 綠框; 扣分字停止高頻統計。
@@ -47,6 +48,11 @@
 - 生成單字策略: `word-noter.gen.word-mode.v1`（`count` / `srs`）
 - 生成截取單字數: `word-noter.gen.word-count.v1`
 - 遠端同步 ID: `local-text-reader.remote.id`
+
+### 本機快取（IndexedDB）
+- 德文詞形分析快取 DB: `word-noter.de-morph-cache.v1`
+- Object Store: `entries`
+- 用途: 緩存德文 UDPipe 分析結果（含 lexeme/POS/feats），避免同篇長文每次重開都重新分析。
 
 ### SRS 畢業規則
 - 當單字在 SRS 間隔已達 `90` 天，且到期後再次複習仍給 `Good`（目前手勢為雙擊）時，該字會標記為「已畢業」。

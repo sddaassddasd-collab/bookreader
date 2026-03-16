@@ -27,6 +27,12 @@ const UDPIPE_ENDPOINT = 'https://lindat.mff.cuni.cz/services/udpipe/api/process'
 const UDPIPE_MODEL_DE = 'german-hdt-ud-2.12-230717';
 const UDPIPE_TIMEOUT_MS = 12000;
 const GERMAN_MORPH_CACHE_MAX = 20;
+const GERMAN_MORPH_DB_NAME = 'word-noter.de-morph-cache.v1';
+const GERMAN_MORPH_DB_STORE = 'entries';
+const GERMAN_MORPH_DB_VERSION = 1;
+const GERMAN_MORPH_DB_MAX_ITEMS = 60;
+const GERMAN_MORPH_DB_MAX_TEXT_CHARS = 400000;
+const GERMAN_MORPH_DB_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
 /* ========= 字典開關（存本機 localStorage） ========= */
 const DICT_OFF_KEY = 'word-noter.dict.off'; // '1' 表關、'0' 或缺值表開
@@ -185,6 +191,8 @@ let activeCardWordKey = '';
 let activeWordFilter = 'all';
 let germanMorphRunId = 0;
 const germanMorphCache = new Map();
+let germanMorphDbPromise = null;
+let germanMorphDbDisabled = false;
 
 const INITIAL_SEGMENTS = 32;
 const MAX_RENDERED_SEGMENTS = 140;
@@ -852,6 +860,199 @@ function rememberGermanMorphCache(key, tokens){
     germanMorphCache.delete(first);
   }
 }
+function compactGermanMorphTokens(tokens){
+  return (Array.isArray(tokens) ? tokens : [])
+    .map((tok)=>({
+      form: String(tok?.form || ''),
+      lemma: String(tok?.lemma || ''),
+      upos: String(tok?.upos || ''),
+      feats: String(tok?.feats || ''),
+      lexeme: normalizeLexemeKey(tok?.lexeme || tok?.lemma || tok?.form || '', 'de')
+    }))
+    .filter(tok => tok.form);
+}
+function idbRequestToPromise(request){
+  return new Promise((resolve, reject)=>{
+    request.onsuccess = ()=> resolve(request.result);
+    request.onerror = ()=> reject(request.error || new Error('IndexedDB request failed'));
+  });
+}
+function idbTransactionDone(tx){
+  return new Promise((resolve, reject)=>{
+    tx.oncomplete = ()=> resolve();
+    tx.onabort = ()=> reject(tx.error || new Error('IndexedDB transaction aborted'));
+    tx.onerror = ()=> reject(tx.error || new Error('IndexedDB transaction failed'));
+  });
+}
+function simpleStringHash(raw){
+  let hash = 2166136261;
+  const str = String(raw || '');
+  for(let i = 0; i < str.length; i += 1){
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+async function buildGermanMorphCacheId(text){
+  const raw = String(text || '').trim();
+  if(!raw) return '';
+  if(typeof crypto !== 'undefined' && crypto?.subtle && typeof TextEncoder !== 'undefined'){
+    try{
+      const bytes = new TextEncoder().encode(raw);
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      const hashHex = Array.from(new Uint8Array(digest))
+        .map((b)=> b.toString(16).padStart(2, '0'))
+        .join('');
+      return `de:${hashHex}:${raw.length}`;
+    }catch{
+      // fallback to non-crypto hash
+    }
+  }
+  return `de:${simpleStringHash(raw)}:${raw.length}`;
+}
+function openGermanMorphDb(){
+  if(germanMorphDbDisabled) return Promise.resolve(null);
+  if(typeof indexedDB === 'undefined'){
+    germanMorphDbDisabled = true;
+    return Promise.resolve(null);
+  }
+  if(germanMorphDbPromise) return germanMorphDbPromise;
+  germanMorphDbPromise = new Promise((resolve)=>{
+    let settled = false;
+    const done = (dbOrNull)=>{
+      if(settled) return;
+      settled = true;
+      resolve(dbOrNull);
+    };
+    const timer = setTimeout(()=>{
+      if(settled) return;
+      console.warn('IndexedDB open timeout for german morphology cache');
+      germanMorphDbDisabled = true;
+      done(null);
+    }, 2500);
+    let req;
+    try{
+      req = indexedDB.open(GERMAN_MORPH_DB_NAME, GERMAN_MORPH_DB_VERSION);
+    }catch(err){
+      console.warn('IndexedDB open failed:', err);
+      germanMorphDbDisabled = true;
+      clearTimeout(timer);
+      done(null);
+      return;
+    }
+    req.onupgradeneeded = (event)=>{
+      const db = req.result;
+      let store = null;
+      if(!db.objectStoreNames.contains(GERMAN_MORPH_DB_STORE)){
+        store = db.createObjectStore(GERMAN_MORPH_DB_STORE, { keyPath: 'id' });
+      }else{
+        const tx = event.target?.transaction;
+        if(tx){
+          store = tx.objectStore(GERMAN_MORPH_DB_STORE);
+        }
+      }
+      if(store && !store.indexNames.contains('updatedAt')){
+        store.createIndex('updatedAt', 'updatedAt', { unique: false });
+      }
+    };
+    req.onsuccess = ()=>{
+      const db = req.result;
+      db.onversionchange = ()=> db.close();
+      clearTimeout(timer);
+      done(db);
+    };
+    req.onerror = ()=>{
+      console.warn('IndexedDB unavailable:', req.error);
+      germanMorphDbDisabled = true;
+      clearTimeout(timer);
+      done(null);
+    };
+    req.onblocked = ()=>{
+      console.warn('IndexedDB open blocked for german morphology cache');
+    };
+  });
+  return germanMorphDbPromise;
+}
+async function pruneGermanMorphDb(db){
+  const targetDb = db || await openGermanMorphDb();
+  if(!targetDb) return;
+  try{
+    const tx = targetDb.transaction(GERMAN_MORPH_DB_STORE, 'readwrite');
+    const store = tx.objectStore(GERMAN_MORPH_DB_STORE);
+    const all = await idbRequestToPromise(store.getAll());
+    if(Array.isArray(all) && all.length > GERMAN_MORPH_DB_MAX_ITEMS){
+      all.sort((a, b)=> (Number(a?.updatedAt) || 0) - (Number(b?.updatedAt) || 0));
+      const dropCount = all.length - GERMAN_MORPH_DB_MAX_ITEMS;
+      for(let i = 0; i < dropCount; i += 1){
+        const id = String(all[i]?.id || '');
+        if(id) store.delete(id);
+      }
+    }
+    await idbTransactionDone(tx);
+  }catch(err){
+    console.warn('IndexedDB prune failed:', err);
+  }
+}
+async function loadGermanMorphTokensFromDb(text){
+  const raw = String(text || '').trim();
+  if(!raw || raw.length > GERMAN_MORPH_DB_MAX_TEXT_CHARS) return null;
+  const db = await openGermanMorphDb();
+  if(!db) return null;
+  const cacheId = await buildGermanMorphCacheId(raw);
+  if(!cacheId) return null;
+  try{
+    const tx = db.transaction(GERMAN_MORPH_DB_STORE, 'readwrite');
+    const store = tx.objectStore(GERMAN_MORPH_DB_STORE);
+    const entry = await idbRequestToPromise(store.get(cacheId));
+    if(!entry){
+      await idbTransactionDone(tx);
+      return null;
+    }
+    const ageMs = Date.now() - (Number(entry.updatedAt) || 0);
+    if(ageMs > GERMAN_MORPH_DB_MAX_AGE_MS){
+      store.delete(cacheId);
+      await idbTransactionDone(tx);
+      return null;
+    }
+    const tokens = compactGermanMorphTokens(entry.tokens);
+    store.put({
+      id: cacheId,
+      lang: 'de',
+      textLen: raw.length,
+      updatedAt: Date.now(),
+      tokens
+    });
+    await idbTransactionDone(tx);
+    return tokens;
+  }catch(err){
+    console.warn('IndexedDB read failed:', err);
+    return null;
+  }
+}
+async function saveGermanMorphTokensToDb(text, tokens){
+  const raw = String(text || '').trim();
+  if(!raw || raw.length > GERMAN_MORPH_DB_MAX_TEXT_CHARS) return;
+  const compact = compactGermanMorphTokens(tokens);
+  const db = await openGermanMorphDb();
+  if(!db) return;
+  const cacheId = await buildGermanMorphCacheId(raw);
+  if(!cacheId) return;
+  try{
+    const tx = db.transaction(GERMAN_MORPH_DB_STORE, 'readwrite');
+    const store = tx.objectStore(GERMAN_MORPH_DB_STORE);
+    store.put({
+      id: cacheId,
+      lang: 'de',
+      textLen: raw.length,
+      updatedAt: Date.now(),
+      tokens: compact
+    });
+    await idbTransactionDone(tx);
+    await pruneGermanMorphDb(db);
+  }catch(err){
+    console.warn('IndexedDB write failed:', err);
+  }
+}
 async function fetchGermanMorphConlluViaProxy(text){
   const ac = new AbortController();
   const timer = setTimeout(()=> ac.abort(), UDPIPE_TIMEOUT_MS);
@@ -925,9 +1126,17 @@ async function analyzeGermanMorphology(text){
   if(germanMorphCache.has(key)){
     return germanMorphCache.get(key) || [];
   }
+  const persistedTokens = await loadGermanMorphTokensFromDb(key);
+  if(Array.isArray(persistedTokens)){
+    rememberGermanMorphCache(key, persistedTokens);
+    return persistedTokens;
+  }
   const conllu = await fetchGermanMorphConllu(key);
-  const tokens = flattenGermanUdWordTokens(parseUdpipeConllu(conllu));
+  const tokens = compactGermanMorphTokens(flattenGermanUdWordTokens(parseUdpipeConllu(conllu)));
   rememberGermanMorphCache(key, tokens);
+  saveGermanMorphTokensToDb(key, tokens).catch((err)=>{
+    console.warn('Persist german morphology cache failed:', err);
+  });
   return tokens;
 }
 function refreshCompiledLexemeSetsFromReader(){
