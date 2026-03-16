@@ -180,8 +180,9 @@ let isRestoringScroll = false;
 
 let currentAudio = null;
 let playQueue = [];
-let ttsGenerated = false;
-const segAudios = new Map(); // idx -> { url, voice }
+const segAudios = new Map(); // idx -> { url, voice, cacheKey }
+const segAudioJobs = new Map(); // idx -> Promise
+let ttsSessionVersion = 0;
 let currentSegIdx = null;
 
 const WORD_SAVE_DEBOUNCE_MS = 120;
@@ -1977,6 +1978,21 @@ function exitImmersive(){
 }
 
 /* ========= TTS ========= */
+function clearSegAudioCache(){
+  ttsSessionVersion += 1;
+  playQueue = [];
+  if(currentAudio){
+    try{ currentAudio.pause(); }catch{}
+    currentAudio = null;
+  }
+  resetAllSegHighlights();
+  resetAllPlayButtons();
+  for (const [, v] of segAudios) {
+    try { if (v?.url) URL.revokeObjectURL(v.url); } catch {}
+  }
+  segAudios.clear();
+  segAudioJobs.clear();
+}
 function resetAllSegHighlights(){
   const scope = virtualDom.viewport || reader;
   if(scope) scope.querySelectorAll('.seg.playing').forEach(el=> el.classList.remove('playing'));
@@ -1990,23 +2006,52 @@ function highlightSegmentByIndex(idx){
     currentSegIdx = idx;
   }
 }
+function getVoiceLabel(voice){
+  return voice === VOICE_FEMALE ? '女' : '男';
+}
+function isSegmentAudioLoading(idx){
+  return segAudioJobs.has(idx);
+}
+function getSegmentAudioTitle(idx){
+  const item = segAudios.get(idx);
+  if(item) return `播放這段（${getVoiceLabel(item.voice)}聲）`;
+  if(isSegmentAudioLoading(idx)) return '語音生成中…';
+  return '點擊生成語音並播放';
+}
+function syncPlayButtonState(btn){
+  if(!btn) return;
+  const idx = parseInt(btn.dataset.i || '-1', 10);
+  const loading = isSegmentAudioLoading(idx);
+  const ready = segAudios.has(idx);
+  btn.classList.toggle('loading', loading);
+  btn.classList.toggle('ready', ready && !loading);
+  btn.classList.toggle('pending', !ready && !loading);
+  btn.disabled = loading;
+  if(!btn.classList.contains('playing')){
+    btn.textContent = loading ? '…' : '▶';
+  }
+  const baseTitle = getSegmentAudioTitle(idx);
+  btn.title = btn.classList.contains('playing') ? `${baseTitle}（播放中）` : baseTitle;
+}
+function syncPlayButtonByIndex(idx){
+  const btn = reader?.querySelector(`.playseg[data-i="${idx}"]`);
+  if(btn) syncPlayButtonState(btn);
+}
 function resetAllPlayButtons(){
   (reader?.querySelectorAll('.playseg') || []).forEach(btn=>{
     btn.classList.remove('playing');
-    btn.textContent = '▶';
-    btn.title = (btn.title || '').replace('（播放中）','').trim();
+    syncPlayButtonState(btn);
   });
 }
 function setButtonPlaying(btn, isPlaying){
+  if(!btn) return;
   if(isPlaying){
     btn.classList.add('playing');
     btn.textContent = '■';
-    if(!/播放中/.test(btn.title)) btn.title = (btn.title || '') + '（播放中）';
   }else{
     btn.classList.remove('playing');
-    btn.textContent = '▶';
-    btn.title = (btn.title || '').replace('（播放中）','').trim();
   }
+  syncPlayButtonState(btn);
 }
 function sanitizeSegmentForTTS(text, genre){
   let t = text || '';
@@ -2028,20 +2073,16 @@ async function fetchTTSUrl({ text, voice }){
   const blob = new Blob([arrayBuf], { type: 'audio/mpeg' });
   return URL.createObjectURL(blob);
 }
-async function buildTTSForCurrent() {
-  const sourceSegments = compiledSegments.length
-    ? compiledSegments
-    : Array.from(document.querySelectorAll('.reader .seg')).map(el => ({
-        i: parseInt(el.dataset.i || '0', 10) || 0,
-        text: el.textContent || ''
-      }));
-  if (!sourceSegments.length) {
-    alert('沒有可朗讀的文字');
-    return;
+function getTTSSourceSegments(){
+  if(compiledSegments.length){
+    return compiledSegments.map(seg => ({ i: seg.i, text: seg.text || '' }));
   }
-  for (const [, v] of segAudios) { try { if (v.url) URL.revokeObjectURL(v.url); } catch {} }
-  segAudios.clear();
-
+  return Array.from(document.querySelectorAll('.reader .seg')).map(el => ({
+    i: parseInt(el.dataset.i || '0', 10) || 0,
+    text: el.textContent || ''
+  }));
+}
+function buildTTSPlan(sourceSegments = getTTSSourceSegments()){
   const genre = getSelectedGenre();
   const shouldAlternate = (genre === 'dialogue');
   const pref = ($('#voicePref').value || 'male');
@@ -2052,37 +2093,107 @@ async function buildTTSForCurrent() {
     const maleThis = startMale ? (turn % 2 === 0) : (turn % 2 === 1);
     return maleThis ? VOICE_MALE : VOICE_FEMALE;
   };
-
+  const items = [];
   for (const segEl of sourceSegments) {
     const raw = (segEl.text || '').trim();
     const cleaned = sanitizeSegmentForTTS(raw, genre);
     if (!cleaned) continue;
     const i = segEl.i ?? parseInt(segEl.dataset?.i || '0', 10);
     const voice = shouldAlternate ? getVoiceByTurn(spokenIndex) : uniformVoice;
-    try {
-      const url = await fetchTTSUrl({ text: cleaned, voice });
-      segAudios.set(i, { url, voice });
-      if (shouldAlternate) spokenIndex++;
-    } catch (err) {
-      console.error('TTS 失敗 at line', i, err);
+    items.push({ i, text: cleaned, voice });
+    if (shouldAlternate) spokenIndex++;
+  }
+  return { items, shouldAlternate };
+}
+function findPlanItemBySegmentIndex(idx, sourceSegments = getTTSSourceSegments()){
+  const { items } = buildTTSPlan(sourceSegments);
+  return items.find(item => item.i === idx) || null;
+}
+async function ensureSegmentAudio(item){
+  if(!item) return null;
+  const idx = item.i;
+  const sessionVersion = ttsSessionVersion;
+  const cacheKey = `${item.voice}::${item.text}`;
+  const existing = segAudios.get(idx);
+  if(existing?.url && existing.cacheKey === cacheKey){
+    return existing;
+  }
+  if(existing?.url){
+    try{ URL.revokeObjectURL(existing.url); }catch{}
+    segAudios.delete(idx);
+  }
+  const running = segAudioJobs.get(idx);
+  if(running) return await running;
+
+  const job = (async ()=>{
+    const url = await fetchTTSUrl({ text: item.text, voice: item.voice });
+    if(sessionVersion !== ttsSessionVersion){
+      try{ URL.revokeObjectURL(url); }catch{}
+      return null;
+    }
+    const payload = { url, voice: item.voice, cacheKey };
+    segAudios.set(idx, payload);
+    ttsDrawer.classList.add('show');
+    return payload;
+  })();
+  segAudioJobs.set(idx, job);
+  syncPlayButtonByIndex(idx);
+  try{
+    return await job;
+  }finally{
+    if(segAudioJobs.get(idx) === job) segAudioJobs.delete(idx);
+    syncPlayButtonByIndex(idx);
+  }
+}
+async function buildTTSForCurrent() {
+  const sourceSegments = getTTSSourceSegments();
+  if (!sourceSegments.length) {
+    alert('沒有可朗讀的文字');
+    return;
+  }
+  const { items, shouldAlternate } = buildTTSPlan(sourceSegments);
+  if(!items.length){
+    alert('沒有可朗讀的文字');
+    return;
+  }
+
+  let built = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const item of items) {
+    const existing = segAudios.get(item.i);
+    const cacheKey = `${item.voice}::${item.text}`;
+    if(existing?.url && existing.cacheKey === cacheKey){
+      skipped += 1;
+      continue;
+    }
+    try{
+      const created = await ensureSegmentAudio(item);
+      if(created?.url) built += 1;
+      else failed += 1;
+    }catch(err){
+      failed += 1;
+      console.error('TTS 失敗 at line', item.i, err);
     }
   }
-  ttsGenerated = true;
+
   resetAllSegHighlights();
   syncPlayButtonsForRenderedSegments();
-  ttsDrawer.classList.add('show');
+  if(segAudios.size) ttsDrawer.classList.add('show');
+  if(failed){
+    alert(`語音生成完成：新增 ${built} 段、已存在 ${skipped} 段、失敗 ${failed} 段。`);
+    return;
+  }
   alert(shouldAlternate
-    ? '語音已生成（對話：男女交替）。'
-    : '語音已生成（整篇單一聲線）。');
+    ? `語音已生成（新增 ${built} 段，已存在 ${skipped} 段；對話：男女交替）。`
+    : `語音已生成（新增 ${built} 段，已存在 ${skipped} 段）。`);
 }
-function segPlayHandler(e){
+async function segPlayHandler(e){
   const btn = e.target.closest('.playseg');
   if(!btn) return;
-  if(!ttsGenerated){ alert('請先按「生成語音」'); return; }
-
   const idx = parseInt(btn.dataset.i, 10);
-  const item = segAudios.get(idx);
-  if(!item) return;
+  if(!Number.isFinite(idx) || idx < 0) return;
+  if(isSegmentAudioLoading(idx)) return;
 
   if(btn.classList.contains('playing')){
     playQueue = [];
@@ -2097,31 +2208,56 @@ function segPlayHandler(e){
   playQueue = [];
   if(currentAudio){ try{ currentAudio.pause(); }catch{} currentAudio = null; }
 
+  let item = segAudios.get(idx);
+  if(!item){
+    const key = getApiKey();
+    if(!key){ alert('請先填入 OpenAI API Key'); return; }
+    const planItem = findPlanItemBySegmentIndex(idx);
+    if(!planItem){
+      alert('此段沒有可朗讀文字');
+      return;
+    }
+    try{
+      item = await ensureSegmentAudio(planItem);
+      syncPlayButtonsForRenderedSegments();
+    }catch(err){
+      console.error(err);
+      alert('此段語音生成失敗：' + err.message);
+      return;
+    }
+  }
+  if(!item?.url) return;
+
+  const activeBtn = reader?.querySelector(`.playseg[data-i="${idx}"]`) || btn;
   const rate = parseFloat(rateRange.value) || 1;
   const au = new Audio(item.url);
   au.playbackRate = rate;
   currentAudio = au;
 
-  setButtonPlaying(btn, true);
+  setButtonPlaying(activeBtn, true);
   highlightSegmentByIndex(idx);
 
   au.onended = ()=>{
-    setButtonPlaying(btn, false);
+    setButtonPlaying(activeBtn, false);
     resetAllSegHighlights();
     currentAudio = null;
   };
 
   au.play().catch(err=>{
     console.error(err);
-    setButtonPlaying(btn, false);
+    setButtonPlaying(activeBtn, false);
     resetAllSegHighlights();
     currentAudio = null;
   });
 }
 async function ttsPlaySegmentsAll() {
-  if (!ttsGenerated) { alert('請先按「生成語音」'); return; }
+  if (!segAudios.size) {
+    alert('尚未有可播放語音，請先點段落喇叭或按「生成語音」。');
+    return;
+  }
   if (currentAudio) { try { currentAudio.pause(); } catch {} currentAudio = null; }
   playQueue = [];
+  resetAllPlayButtons();
 
   const rate = parseFloat($('#rateRange').value) || 1;
   const orderedIdx = Array.from(segAudios.keys()).sort((a,b)=> a - b);
@@ -2129,9 +2265,18 @@ async function ttsPlaySegmentsAll() {
     const item = segAudios.get(i);
     if (item) playQueue.push({ idx: i, url: item.url, voice: item.voice });
   }
+  if(!playQueue.length){
+    alert('目前沒有可播放的語音。');
+    return;
+  }
 
   const playNext = function() {
-    if (playQueue.length === 0) { currentAudio = null; resetAllSegHighlights(); return; }
+    if (playQueue.length === 0) {
+      currentAudio = null;
+      resetAllSegHighlights();
+      resetAllPlayButtons();
+      return;
+    }
     const it = playQueue.shift();
     resetAllSegHighlights();
     highlightSegmentByIndex(it.idx);
@@ -2157,6 +2302,7 @@ function bindTTSUI(){
     playQueue = [];
     if(currentAudio){ currentAudio.pause(); currentAudio=null; }
     resetAllSegHighlights();
+    resetAllPlayButtons();
   });
   $('#buildTTS')?.addEventListener('click', async ()=>{
     const key = getApiKey();
@@ -2540,15 +2686,22 @@ function teardownReader(){
 }
 function applyAudioButtonIfAny(segEl, idx){
   if(!segEl) return;
-  const item = segAudios.get(idx);
-  if(!item) return;
-  if(segEl.querySelector('.playseg')) return;
-  const btn = document.createElement('button');
-  btn.className = 'playseg';
-  btn.textContent = '▶';
-  btn.title = `播放這段（${item.voice === VOICE_FEMALE ? '女' : '男'}聲）`;
-  btn.dataset.i = String(idx);
-  segEl.prepend(btn);
+  if(!Number.isFinite(idx) || idx < 0) return;
+  const seg = compiledSegments[idx];
+  const raw = (seg?.text ?? segEl.textContent ?? '').trim();
+  const cleaned = sanitizeSegmentForTTS(raw, getSelectedGenre());
+  const existingBtn = segEl.querySelector('.playseg');
+  if(!cleaned){
+    if(existingBtn) existingBtn.remove();
+    return;
+  }
+  const btn = existingBtn || document.createElement('button');
+  if(!existingBtn){
+    btn.className = 'playseg';
+    btn.dataset.i = String(idx);
+    segEl.prepend(btn);
+  }
+  syncPlayButtonState(btn);
 }
 function buildSegmentElement(seg){
   const segEl = document.createElement('div');
@@ -2717,8 +2870,7 @@ function tokenizeParagraphToHTML(textLine){
 }
 
 function compile(){
-  ttsGenerated = false;
-  segAudios.clear();
+  clearSegAudioCache();
   ttsDrawer.classList.remove('show');
   setActiveCardWordContext('');
   deductedWords.clear();
@@ -2789,6 +2941,7 @@ function compile(){
       .map(seg => `<div class="seg" data-i="${seg.i}">${seg.html}</div>`)
       .join('\n');
     readerEl.querySelectorAll('.seg').forEach(registerSegmentWords);
+    syncPlayButtonsForRenderedSegments();
   }
   applyHFClassesToReader({ force:true });
   if(typeof onReaderScroll === 'function') onReaderScroll();
@@ -4439,8 +4592,8 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
     teardownReader();
     reader.innerHTML='<div class="empty">已清空，請貼上新文章。</div>';
     setActiveCardWordContext('');
-    for(const [,v] of segAudios){ try{ URL.revokeObjectURL(v.url); }catch{} }
-    segAudios.clear(); ttsGenerated=false; ttsDrawer.classList.remove('show');
+    clearSegAudioCache();
+    ttsDrawer.classList.remove('show');
     updateProgressUI(0); saveActiveSlot();
   });
   $('#cardClose')?.addEventListener('click', ()=>{

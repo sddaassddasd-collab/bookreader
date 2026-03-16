@@ -91,8 +91,13 @@ button:active{transform:translateY(1px)}
   position:absolute; left:0; top:0.1em; border:1px solid var(--border);
   background:#0b1220; color:#cbd5e1; border-radius:8px; padding:2px 6px;
   font-size:12px; cursor:pointer; box-shadow:none; display:inline-block;
+  opacity:.45; transition:opacity .18s ease, background .18s ease, transform .12s ease;
 }
-.seg .playseg:hover{background:#1f2937}
+.seg .playseg.pending{opacity:.45}
+.seg .playseg.ready,
+.seg .playseg.playing{opacity:1}
+.seg .playseg.loading{opacity:.78;cursor:wait}
+.seg .playseg:not(.loading):hover{background:#1f2937}
 .seg.sep{ padding-left:0; margin:6px 0; height:6px; }
 .seg.playing{
   outline:2px solid rgba(56,189,248,.6);
