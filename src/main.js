@@ -7,7 +7,10 @@ import {
   saveSlots,
   loadProgressMap,
   saveProgressMap,
+  loadBookmarksMap,
+  saveBookmarksMap,
   MAX_SLOTS,
+  MAX_BOOKMARKS_PER_SLOT,
 } from './storage.js';
 
 /* ========= ✅ 換成你的 Apps Script Web App URL ========= */
@@ -137,6 +140,9 @@ const activeSlotLabel = $('#activeSlotLabel');
 const progressLabel = $('#progressLabel');
 const progressFill = $('#progressFill');
 const statusEl = $('#status');
+const bookmarkListEl = $('#bookmarkList');
+const bookmarkCountEl = $('#bookmarkCount');
+const bookmarkHintEl = $('#bookmarkHint');
 
 const card = $('#card');
 const defsBox = $('#defs');
@@ -165,6 +171,7 @@ const exitImmersiveBtn = $('#exitImmersive');
 /* ========= 狀態 ========= */
 let slots = loadSlots();
 let progressMap = loadProgressMap();
+let bookmarksMap = loadBookmarksMap();
 let activeSlotId = clampId(loadActiveSlotId());
 let lastSelectionText = '';
 let isImmersive = false;
@@ -234,6 +241,7 @@ init();
 
 async function init() {
   bindSlotUI();
+  bindBookmarkUI();
   bindGeneralUI();
   bindRemoteUI();
   bindStoryUI();
@@ -303,6 +311,7 @@ function bindSlotUI() {
       slots = resetSlot(slots, i);
     }
     resetAllProgressInMap();
+    resetAllBookmarks();
     setActiveSlot(1);
     renderSlotBoard();
     setStatus('已清空全部書格');
@@ -318,6 +327,11 @@ function bindSlotUI() {
     scheduleRemotePush();
   });
   reader?.addEventListener('scroll', onReaderScroll, { passive: true });
+}
+
+function bindBookmarkUI(){
+  document.getElementById('addBookmark')?.addEventListener('click', addBookmarkAtCurrentPosition);
+  bookmarkListEl?.addEventListener('click', handleBookmarkListClick);
 }
 
 function onReaderScroll() {
@@ -391,6 +405,7 @@ function renderSlotBoard() {
       if (!confirm(`確定刪除書格 ${slot.id} 的內容與進度？`)) return;
       slots = resetSlot(slots, slot.id);
       resetProgressInMap(slot.id);
+      removeBookmarksForSlot(slot.id);
       if (activeSlotId === slot.id) setActiveSlot(slot.id);
       renderSlotBoard();
       setStatus(`已清空書格 ${slot.id}`);
@@ -421,6 +436,7 @@ function setActiveSlot(id) {
 compile();
 
   updateProgressUI(progress);
+  renderBookmarkList();
   renderSlotBoard();
   setStatus(`已切換到書格 ${slot.id}`);
 }
@@ -436,12 +452,263 @@ function saveActiveSlot() {
   setSlotProgressInMap(activeSlotId, progress);
   slots = updateSlot(slots, activeSlotId, { content, title, progress });
   renderSlotBoard();
+  renderBookmarkList();
   setStatus(`已儲存到書格 ${activeSlotId}`);
   scheduleRemotePush();
 }
 
 function findSlot(id) {
   return slots.find((s) => s.id === clampId(id));
+}
+
+/* ========= 書籤 ========= */
+function handleBookmarkListClick(e){
+  const actionEl = e.target?.closest?.('button[data-action]');
+  if(!actionEl) return;
+  const item = actionEl.closest('.bookmark-item');
+  const bookmarkId = item?.dataset?.id;
+  if(!bookmarkId) return;
+  const action = actionEl.dataset.action;
+  if(action === 'jump'){
+    jumpToBookmark(bookmarkId);
+    return;
+  }
+  if(action === 'rename'){
+    renameBookmark(bookmarkId);
+    return;
+  }
+  if(action === 'delete'){
+    deleteBookmark(bookmarkId);
+  }
+}
+
+function addBookmarkAtCurrentPosition(){
+  if(!compiledSegments.length){
+    setStatus('目前沒有可書籤的內容');
+    return;
+  }
+  const anchor = captureCurrentAnchor();
+  if(!anchor){
+    setStatus('目前沒有可書籤的位置');
+    return;
+  }
+  const list = getBookmarksForSlot(activeSlotId);
+  if(list.length >= MAX_BOOKMARKS_PER_SLOT){
+    alert(`每個書格最多 ${MAX_BOOKMARKS_PER_SLOT} 筆書籤，請先刪除舊書籤。`);
+    return;
+  }
+  const defaultLabel = buildDefaultBookmarkLabel();
+  const input = window.prompt('書籤名稱（可留空）', defaultLabel);
+  if(input === null) return;
+  const label = (input || '').trim() || defaultLabel;
+  const bookmark = {
+    id: createBookmarkId(activeSlotId),
+    label,
+    anchor,
+    progress: getScrollProgress(reader),
+    snippet: getBookmarkSnippet(anchor.i),
+    createdAt: nowISO(),
+    contentHash: hashContent($('#src')?.value || ''),
+  };
+  setBookmarksForSlot(activeSlotId, [bookmark, ...list]);
+  renderBookmarkList();
+  setStatus(`已新增書籤「${label}」`);
+  scheduleRemotePush();
+}
+
+function jumpToBookmark(bookmarkId){
+  const bookmark = findBookmark(activeSlotId, bookmarkId);
+  if(!bookmark){
+    setStatus('找不到該書籤');
+    return;
+  }
+  let targetAnchor = bookmark.anchor;
+  let extra = '';
+  const currentHash = hashContent($('#src')?.value || '');
+  if(bookmark.contentHash && currentHash && bookmark.contentHash !== currentHash){
+    const matchIdx = findSegmentBySnippet(bookmark.snippet);
+    if(matchIdx >= 0){
+      targetAnchor = { i: matchIdx, offset: 0 };
+      extra = '（內容已變更，改用片段定位）';
+    }else{
+      extra = '（內容已變更，嘗試原位置）';
+    }
+  }
+  if(!targetAnchor || !Number.isFinite(targetAnchor.i) || targetAnchor.i < 0){
+    setStatus('書籤位置無效');
+    return;
+  }
+  isRestoringScroll = true;
+  restoreAnchorForSlot(activeSlotId, targetAnchor);
+  setStatus(`已跳到書籤「${bookmark.label}」${extra}`);
+}
+
+function renameBookmark(bookmarkId){
+  const list = getBookmarksForSlot(activeSlotId);
+  const idx = list.findIndex(item => item.id === bookmarkId);
+  if(idx < 0){
+    setStatus('找不到該書籤');
+    return;
+  }
+  const current = list[idx];
+  const input = window.prompt('更新書籤名稱', current.label || '');
+  if(input === null) return;
+  const nextLabel = (input || '').trim() || current.label || '書籤';
+  const next = list.slice();
+  next[idx] = { ...current, label: nextLabel };
+  setBookmarksForSlot(activeSlotId, next);
+  renderBookmarkList();
+  setStatus('已更新書籤名稱');
+  scheduleRemotePush();
+}
+
+function deleteBookmark(bookmarkId){
+  const list = getBookmarksForSlot(activeSlotId);
+  const current = list.find(item => item.id === bookmarkId);
+  if(!current){
+    setStatus('找不到該書籤');
+    return;
+  }
+  if(!confirm(`確定刪除書籤「${current.label}」？`)) return;
+  const next = list.filter(item => item.id !== bookmarkId);
+  setBookmarksForSlot(activeSlotId, next);
+  renderBookmarkList();
+  setStatus('已刪除書籤');
+  scheduleRemotePush();
+}
+
+function renderBookmarkList(){
+  if(!bookmarkListEl) return;
+  const list = getBookmarksForSlot(activeSlotId);
+  const currentHash = hashContent($('#src')?.value || '');
+  if(bookmarkCountEl){
+    bookmarkCountEl.textContent = `${list.length} / ${MAX_BOOKMARKS_PER_SLOT}`;
+  }
+
+  bookmarkListEl.innerHTML = '';
+  if(!list.length){
+    bookmarkListEl.innerHTML = '<div class="bookmark-empty">尚未加入書籤，閱讀到重點段落時可按「加入書籤」。</div>';
+    if(bookmarkHintEl) bookmarkHintEl.textContent = '每格最多 50 筆，支援跨裝置同步。';
+    return;
+  }
+
+  if(bookmarkHintEl) bookmarkHintEl.textContent = '可前往、改名或刪除書籤。';
+
+  list.forEach((bookmark) => {
+    const item = document.createElement('div');
+    item.className = 'bookmark-item';
+    item.dataset.id = bookmark.id;
+
+    const head = document.createElement('div');
+    head.className = 'bookmark-head';
+    const title = document.createElement('div');
+    title.className = 'bookmark-title';
+    title.textContent = bookmark.label || '書籤';
+    head.appendChild(title);
+
+    const hashMismatch = Boolean(bookmark.contentHash && currentHash && bookmark.contentHash !== currentHash);
+    if(hashMismatch){
+      const badge = document.createElement('span');
+      badge.className = 'bookmark-badge';
+      badge.textContent = '內容已變更';
+      head.appendChild(badge);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'bookmark-meta';
+    const segIdx = Number(bookmark?.anchor?.i);
+    const segLabel = Number.isFinite(segIdx) && segIdx >= 0 ? `段落 ${segIdx + 1}` : '段落 ?';
+    const prog = Math.round((Number(bookmark.progress) || 0) * 100);
+    const createdAt = bookmark.createdAt ? formatTime(bookmark.createdAt) : '未知時間';
+    meta.textContent = `${segLabel} · ${prog}% · ${createdAt}`;
+
+    const snippet = document.createElement('div');
+    snippet.className = 'bookmark-snippet';
+    snippet.textContent = bookmark.snippet || '（無片段預覽）';
+
+    const actions = document.createElement('div');
+    actions.className = 'bookmark-actions';
+    actions.innerHTML = [
+      '<button class="secondary" data-action="jump">前往</button>',
+      '<button class="secondary" data-action="rename">改名</button>',
+      '<button class="danger" data-action="delete">刪除</button>',
+    ].join('');
+
+    item.append(head, meta, snippet, actions);
+    bookmarkListEl.appendChild(item);
+  });
+}
+
+function getBookmarksForSlot(id){
+  const key = String(clampId(id));
+  const list = bookmarksMap && Array.isArray(bookmarksMap[key]) ? bookmarksMap[key] : [];
+  return list.slice();
+}
+
+function setBookmarksForSlot(id, list){
+  const key = String(clampId(id));
+  const next = {
+    ...(bookmarksMap || {}),
+    [key]: Array.isArray(list) ? list : [],
+  };
+  saveBookmarksMap(next);
+  bookmarksMap = loadBookmarksMap();
+}
+
+function removeBookmarksForSlot(id){
+  setBookmarksForSlot(id, []);
+}
+
+function resetAllBookmarks(){
+  const next = {};
+  for(let i = 1; i <= MAX_SLOTS; i += 1){
+    next[i] = [];
+  }
+  saveBookmarksMap(next);
+  bookmarksMap = loadBookmarksMap();
+}
+
+function findBookmark(slotId, bookmarkId){
+  return getBookmarksForSlot(slotId).find(item => item.id === bookmarkId) || null;
+}
+
+function createBookmarkId(slotId){
+  return `bm-${clampId(slotId)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildDefaultBookmarkLabel(){
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  return `書籤 ${hh}:${mm}`;
+}
+
+function findSegmentBySnippet(snippet){
+  const needle = String(snippet || '').replace(/\s+/g, ' ').trim();
+  if(!needle) return -1;
+  const lowered = needle.toLowerCase();
+  for(const seg of compiledSegments){
+    const text = String(seg?.text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if(text && text.includes(lowered)) return seg.i;
+  }
+  return -1;
+}
+
+function getBookmarkSnippet(segIdx){
+  const idx = Number.isFinite(segIdx) ? Math.max(0, Math.floor(segIdx)) : 0;
+  const direct = compiledSegments[idx]?.text || '';
+  const source = direct.trim() ? direct : (compiledSegments.find(seg => (seg?.text || '').trim())?.text || '');
+  return String(source).replace(/\s+/g, ' ').trim().slice(0, 140);
+}
+
+function hashContent(text){
+  const input = String(text || '');
+  let hash = 2166136261;
+  for(let i = 0; i < input.length; i += 1){
+    hash ^= input.charCodeAt(i);
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+  }
+  return `h${(hash >>> 0).toString(36)}`;
 }
 
 /* ========= 捲軸錨點（segment anchor） ========= */
@@ -470,24 +737,39 @@ function removeAnchorForSlot(id){
 
 // Capture first visible .seg and offset within it, then persist.
 function saveScrollAnchor(slotId){
-  if(!reader) return;
-  const segs = Array.from(reader.querySelectorAll('.seg'));
-  const top = reader.scrollTop;
-  let found = null;
-  for(const s of segs){
-    const off = s.offsetTop;
-    const h = s.offsetHeight || 1;
-    if(off + h > top){
-      found = { i: Number(s.dataset.i || 0), offset: Math.max(0, top - off) };
-      break;
-    }
-  }
+  const found = captureCurrentAnchor();
   // fallback: if no segs (empty), clear anchor
   if(!found) {
     removeAnchorForSlot(slotId);
     return;
   }
   setAnchorForSlot(slotId, found);
+}
+
+function captureCurrentAnchor(){
+  if(!reader) return null;
+  const top = reader.scrollTop;
+  const readerRect = reader.getBoundingClientRect();
+  const segContainer = useVirtualScroll ? (virtualDom.viewport || reader) : reader;
+  const segs = Array.from(segContainer.querySelectorAll('.seg'));
+  for(const s of segs){
+    const segRect = s.getBoundingClientRect();
+    const off = (segRect.top - readerRect.top) + top;
+    const h = segRect.height || s.offsetHeight || 1;
+    if(off + h > top){
+      return {
+        i: Number(s.dataset.i || 0),
+        offset: Math.max(0, Math.floor(top - off)),
+      };
+    }
+  }
+  if(useVirtualScroll && compiledSegments.length){
+    const avg = Math.max(virtualDom?.avgHeight || 0, 1);
+    const idx = Math.max(0, Math.min(compiledSegments.length - 1, Math.floor(top / avg)));
+    const offset = Math.max(0, Math.floor(top - (idx * avg)));
+    return { i: idx, offset };
+  }
+  return null;
 }
 
 // Try to restore an anchor; retry a few times while content is rendering.
@@ -1522,6 +1804,7 @@ async function pullRemoteState(id = remoteId){
   if(!data || typeof data !== 'object') data = {};
   const hasPayload = Array.isArray(data.slots)
     || typeof data.activeSlotId !== 'undefined'
+    || (data.bookmarks && typeof data.bookmarks === 'object')
     || Array.isArray(data.words)
     || typeof data.lang === 'string'
     || typeof data.level === 'string'
@@ -1578,6 +1861,10 @@ async function pullRemoteState(id = remoteId){
     progressMap = nextProgress;
     saveProgressMap(progressMap);
   }
+  if(data.bookmarks && typeof data.bookmarks === 'object'){
+    saveBookmarksMap(data.bookmarks);
+    bookmarksMap = loadBookmarksMap();
+  }
   if(typeof data.activeSlotId !== 'undefined'){
     activeSlotId = clampId(data.activeSlotId);
     saveActiveSlotId(activeSlotId);
@@ -1601,6 +1888,7 @@ async function pushRemoteState(id = remoteId){
   const payload = {
     slots,
     activeSlotId,
+    bookmarks: bookmarksMap,
     words: loadWords(),
     lang: llmPref.lang,
     level: llmPref.level,
@@ -4594,7 +4882,7 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
     setActiveCardWordContext('');
     clearSegAudioCache();
     ttsDrawer.classList.remove('show');
-    updateProgressUI(0); saveActiveSlot();
+    updateProgressUI(0); saveActiveSlot(); renderBookmarkList();
   });
   $('#cardClose')?.addEventListener('click', ()=>{
     card.style.display='none';

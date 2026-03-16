@@ -1,7 +1,9 @@
 const STORAGE_KEY = 'local-text-reader.slots.v1';
 const ACTIVE_KEY = 'local-text-reader.activeSlot.v1';
 const PROGRESS_KEY = 'local-text-reader.progress.v1';
+const BOOKMARKS_KEY = 'local-text-reader.bookmarks.v1';
 export const MAX_SLOTS = 5;
+export const MAX_BOOKMARKS_PER_SLOT = 50;
 
 export function defaultSlot(id) {
   return {
@@ -69,6 +71,23 @@ function writeProgress(map) {
   }
 }
 
+function readBookmarks() {
+  try {
+    const stored = localStorage.getItem(BOOKMARKS_KEY);
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBookmarks(map) {
+  try {
+    localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
 function normalizeProgress(raw) {
   const out = {};
   if (raw && typeof raw === 'object') {
@@ -79,6 +98,64 @@ function normalizeProgress(raw) {
     });
   }
   return out;
+}
+
+function normalizeBookmarks(raw) {
+  const out = {};
+  for (let i = 1; i <= MAX_SLOTS; i += 1) {
+    out[i] = [];
+  }
+
+  if (!raw || typeof raw !== 'object') return out;
+
+  Object.entries(raw).forEach(([slotId, list]) => {
+    const rawId = Number(slotId);
+    if (!Number.isFinite(rawId)) return;
+    const idNum = clampId(rawId);
+    const arr = Array.isArray(list) ? list : [];
+    const normalized = arr
+      .map((item, idx) => normalizeBookmark(item, idx))
+      .filter(Boolean)
+      .slice(0, MAX_BOOKMARKS_PER_SLOT);
+    out[idNum] = normalized;
+  });
+
+  return out;
+}
+
+function normalizeBookmark(raw, idx = 0) {
+  if (!raw || typeof raw !== 'object') return null;
+  const anchorRaw = raw.anchor && typeof raw.anchor === 'object' ? raw.anchor : null;
+  const anchorIdx = Number(anchorRaw?.i);
+  if (!Number.isFinite(anchorIdx) || anchorIdx < 0) return null;
+
+  const offsetRaw = Number(anchorRaw?.offset);
+  const progressRaw = Number(raw.progress);
+  const now = new Date().toISOString();
+  const id = String(raw.id || '').trim() || `bm-${Date.now().toString(36)}-${idx}`;
+  const label = String(raw.label || '').trim() || '書籤';
+  const snippet = String(raw.snippet || '').trim().slice(0, 180);
+  const createdAt = isValidISO(raw.createdAt) ? raw.createdAt : now;
+  const contentHash = String(raw.contentHash || '').trim().slice(0, 64);
+
+  return {
+    id,
+    label,
+    anchor: {
+      i: Math.max(0, Math.floor(anchorIdx)),
+      offset: Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0,
+    },
+    progress: clampProgress(Number.isFinite(progressRaw) ? progressRaw : 0),
+    snippet,
+    createdAt,
+    contentHash,
+  };
+}
+
+function isValidISO(v) {
+  if (typeof v !== 'string' || !v.trim()) return false;
+  const ts = Date.parse(v);
+  return Number.isFinite(ts);
 }
 
 export function loadSlots() {
@@ -154,4 +231,15 @@ export function loadProgressMap() {
 
 export function saveProgressMap(map) {
   writeProgress(normalizeProgress(map));
+}
+
+export function loadBookmarksMap() {
+  const raw = readBookmarks();
+  const normalized = normalizeBookmarks(raw);
+  writeBookmarks(normalized);
+  return normalized;
+}
+
+export function saveBookmarksMap(map) {
+  writeBookmarks(normalizeBookmarks(map));
 }

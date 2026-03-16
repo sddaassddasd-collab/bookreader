@@ -9,6 +9,7 @@
 
 ## 功能概覽
 - 五格書架: 每格存文章、標題與捲動進度。
+- 書籤: 每格可加入最多 50 筆書籤（段落錨點 + 片段預覽），可快速跳轉、改名、刪除。
 - 閱讀區: 分詞渲染，點字查詢與統計；可切換「次數」或「SRS」模式（SRS 下單擊=Again、雙擊=Good）。
 - 德語詞形: 背景使用 UDPipe 進行 lemma/POS/依存分析，合併動詞人稱時態、名詞單複數、形容詞/副詞詞形，並辨識可分離動詞。
 - 德語詞形快取: 分析結果會寫入 IndexedDB（以語言+內容雜湊為鍵），重開頁面仍可重用，減少長文重跑時間。
@@ -36,11 +37,13 @@
 - 框選句子 -> 翻譯與文法。
 - 段落喇叭可先單段生成語音；「生成語音」可一次補齊全篇，之後可用「朗讀全部」連播。
 - 進度自動存書格，也可按「讀取進度」還原。
+- 可按「加入書籤」記錄目前段落，並在閱讀區書籤面板快速跳回重點位置。
 
 ## 本機儲存（localStorage）
 - 書格: `local-text-reader.slots.v1`
 - 目前書格: `local-text-reader.activeSlot.v1`
 - 捲動進度 map: `local-text-reader.progress.v1`
+- 書籤 map: `local-text-reader.bookmarks.v1`
 - 生字本: `word-noter.en.v1` / `word-noter.de.v1` / `word-noter.fr.v1`
 - 生字本佇列: `word-noter.queue.{en|de|fr}.v1`
 - 字典開關: `word-noter.dict.off`
@@ -63,7 +66,7 @@
 - `src/main.js` 的 `API_BASE` 指向你的 Proxy。
 - 同步 ID 會對 `GET/POST ${API_BASE}/api/state?id=<ID>` 讀寫 JSON。
 - `AUTO_REMOTE_SYNC_ENABLED=false`，只在手動按閱讀區「儲存」時上傳; 「立即同步」只拉取遠端。
-- 同步內容: `slots`、`activeSlotId`、當前語言的 `words`、生成偏好（包含單字策略與截取數量）。
+- 同步內容: `slots`、`activeSlotId`、`bookmarks`、當前語言的 `words`、生成偏好（包含單字策略與截取數量）。
 
 ## gas-proxy（Node / Cloud Run）
 - 用途: 隱藏 GAS token，並提供跨網域同步入口。

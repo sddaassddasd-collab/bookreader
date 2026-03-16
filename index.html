@@ -81,10 +81,21 @@
             <div class="reader-head-actions">
               <button id="pushRemote" class="accent">儲存</button>
               <button id="loadProgress" class="secondary" title="從書格讀取儲存的捲動進度">讀取進度</button>
+              <button id="addBookmark" class="secondary" title="將目前段落加入書籤">加入書籤</button>
               <button id="openImmersive" class="secondary">沉浸模式</button>
               <button id="resetProgressBtn" class="secondary">重置進度</button>
               <div class="status" id="status">就緒</div>
             </div>
+          </div>
+          <div class="bookmark-panel" id="bookmarkPanel">
+            <div class="bookmark-panel-head">
+              <div class="label">書籤</div>
+              <div class="small"><span id="bookmarkCount">0 / 50</span></div>
+            </div>
+            <div id="bookmarkList" class="bookmark-list">
+              <div class="bookmark-empty">尚未加入書籤，閱讀到重點段落時可按「加入書籤」。</div>
+            </div>
+            <div class="help" id="bookmarkHint">每格最多 50 筆，支援跨裝置同步。</div>
           </div>
           <div id="reader" class="reader" aria-live="polite">
             <div class="empty">尚未產生內容。請先貼上文章並點「產生可點文字」。</div>
@@ -271,6 +282,6 @@
     </div>
   </div>
 
-  <script type="module" src="./src/main.js?v=20260316-2"></script>
+  <script type="module" src="./src/main.js?v=20260317-1"></script>
 </body>
 </html>
