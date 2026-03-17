@@ -33,6 +33,7 @@
 - 貼上文章 -> 產生可點文字 -> 點字加入生字本，顯示字典卡。
 - 生成內容: 依程度/語言/類型產文；可選擇依「次數」或「SRS 到期」挑字，並可設定截取單字數量（預設 15）；已畢業單字不再納入生成詞彙。
 - 24h 查字生成: 以最近 24 小時學習過（`lastSeen`）的單字全集直接生成文章（若無紀錄則提示）。
+- 24h 點字模式: 由「24h 查字生成」產生的文章中，目標字可正常查字典，但不會觸發閱讀區的 SRS 點擊計分。
 - 生字統計卡：可即時查看四種統計，點卡片可套用篩選，再點一次取消。
 - 框選句子 -> 翻譯與文法。
 - 段落喇叭可先單段生成語音；「生成語音」可一次補齊全篇，之後可用「朗讀全部」連播。
@@ -51,6 +52,7 @@
 - 生成單字策略: `word-noter.gen.word-mode.v1`（`count` / `srs`）
 - 生成截取單字數: `word-noter.gen.word-count.v1`
 - 遠端同步 ID: `local-text-reader.remote.id`
+- 閱讀互動模式: `local-text-reader.reader-interaction.v1`
 
 ### 本機快取（IndexedDB）
 - 德文詞形分析快取 DB: `word-noter.de-morph-cache.v1`
@@ -66,7 +68,7 @@
 - `src/main.js` 的 `API_BASE` 指向你的 Proxy。
 - 同步 ID 會對 `GET/POST ${API_BASE}/api/state?id=<ID>` 讀寫 JSON。
 - `AUTO_REMOTE_SYNC_ENABLED=false`，只在手動按閱讀區「儲存」時上傳; 「立即同步」只拉取遠端。
-- 同步內容: `slots`、`activeSlotId`、`bookmarks`、當前語言的 `words`、生成偏好（包含單字策略與截取數量）。
+- 同步內容: `slots`、`activeSlotId`、`bookmarks`、`readerInteraction`、當前語言的 `words`、生成偏好（包含單字策略與截取數量）。
 
 ## gas-proxy（Node / Cloud Run）
 - 用途: 隱藏 GAS token，並提供跨網域同步入口。

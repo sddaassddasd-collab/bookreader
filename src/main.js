@@ -48,11 +48,15 @@ const GROK_KEY_STORAGE = 'word-noter.grok.key';
 const WORD_MODE_STORAGE = 'word-noter.gen.word-mode.v1';
 const WORD_COUNT_STORAGE = 'word-noter.gen.word-count.v1';
 const MORPH_PROXY_DISABLED_UNTIL_KEY = 'word-noter.morph.proxy.disabled-until.v1';
+const READER_INTERACTION_KEY = 'local-text-reader.reader-interaction.v1';
 const WORD_MODE_COUNT = 'count';
 const WORD_MODE_SRS = 'srs';
+const READER_MODE_NORMAL = 'normal';
+const READER_MODE_24H_LOOKUP_ONLY = '24h_lookup_only';
 const DEFAULT_GEN_WORD_COUNT = 15;
 const MIN_GEN_WORD_COUNT = 1;
 const MAX_GEN_WORD_COUNT = 50;
+const MAX_READER_EXEMPT_WORDS = 400;
 const SRS_DEFAULT_EASE = 2.5;
 const SRS_MIN_EASE = 1.3;
 const SRS_MAX_EASE = 3.2;
@@ -172,6 +176,8 @@ const exitImmersiveBtn = $('#exitImmersive');
 let slots = loadSlots();
 let progressMap = loadProgressMap();
 let bookmarksMap = loadBookmarksMap();
+let readerInteractionMap = loadReaderInteractionMap();
+let activeReaderInteraction = makeReaderInteractionRuntime(null);
 let activeSlotId = clampId(loadActiveSlotId());
 let lastSelectionText = '';
 let isImmersive = false;
@@ -312,6 +318,7 @@ function bindSlotUI() {
     }
     resetAllProgressInMap();
     resetAllBookmarks();
+    resetAllReaderInteractionInMap();
     setActiveSlot(1);
     renderSlotBoard();
     setStatus('已清空全部書格');
@@ -406,6 +413,7 @@ function renderSlotBoard() {
       slots = resetSlot(slots, slot.id);
       resetProgressInMap(slot.id);
       removeBookmarksForSlot(slot.id);
+      clearReaderInteractionForSlot(slot.id);
       if (activeSlotId === slot.id) setActiveSlot(slot.id);
       renderSlotBoard();
       setStatus(`已清空書格 ${slot.id}`);
@@ -434,11 +442,15 @@ function setActiveSlot(id) {
   $('#src').value = slot.content || '';
 
 compile();
+  applyReaderInteractionFromActiveSlotContent(slot.id);
 
   updateProgressUI(progress);
   renderBookmarkList();
   renderSlotBoard();
-  setStatus(`已切換到書格 ${slot.id}`);
+  const interactionHint = activeReaderInteraction.mode === READER_MODE_24H_LOOKUP_ONLY
+    ? '（24h 目標字查字不計 SRS）'
+    : '';
+  setStatus(`已切換到書格 ${slot.id}${interactionHint}`);
 }
 
 function saveActiveSlot() {
@@ -451,6 +463,7 @@ function saveActiveSlot() {
 
   setSlotProgressInMap(activeSlotId, progress);
   slots = updateSlot(slots, activeSlotId, { content, title, progress });
+  syncReaderInteractionForSavedContent(content);
   renderSlotBoard();
   renderBookmarkList();
   setStatus(`已儲存到書格 ${activeSlotId}`);
@@ -1711,6 +1724,178 @@ function resetAllProgressInMap(){
   scheduleProgressSave();
 }
 
+function readReaderInteractionMap(){
+  try{
+    return JSON.parse(localStorage.getItem(READER_INTERACTION_KEY)) || {};
+  }catch{
+    return {};
+  }
+}
+function writeReaderInteractionMap(map){
+  try{
+    localStorage.setItem(READER_INTERACTION_KEY, JSON.stringify(map || {}));
+  }catch{
+    /* ignore */
+  }
+}
+function normalizeReaderInteractionMode(mode){
+  return mode === READER_MODE_24H_LOOKUP_ONLY ? READER_MODE_24H_LOOKUP_ONLY : READER_MODE_NORMAL;
+}
+function normalizeReaderExemptWords(rawWords){
+  if(!Array.isArray(rawWords)) return [];
+  const out = [];
+  const seen = new Set();
+  rawWords.forEach((word)=>{
+    const key = toLowerAlpha(String(word || '').trim());
+    if(!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(key);
+  });
+  return out.slice(0, MAX_READER_EXEMPT_WORDS);
+}
+function normalizeReaderInteractionEntry(raw){
+  if(!raw || typeof raw !== 'object'){
+    return { mode: READER_MODE_NORMAL, contentHash: '', exemptWords: [] };
+  }
+  const mode = normalizeReaderInteractionMode(raw.mode);
+  if(mode !== READER_MODE_24H_LOOKUP_ONLY){
+    return { mode: READER_MODE_NORMAL, contentHash: '', exemptWords: [] };
+  }
+  const contentHash = String(raw.contentHash || '').trim().slice(0, 96);
+  const exemptWords = normalizeReaderExemptWords(raw.exemptWords);
+  if(!contentHash || !exemptWords.length){
+    return { mode: READER_MODE_NORMAL, contentHash: '', exemptWords: [] };
+  }
+  return { mode: READER_MODE_24H_LOOKUP_ONLY, contentHash, exemptWords };
+}
+function normalizeReaderInteractionMap(raw){
+  const out = {};
+  if(!raw || typeof raw !== 'object') return out;
+  Object.entries(raw).forEach(([slotId, entry])=>{
+    const idNum = Number(slotId);
+    if(!Number.isFinite(idNum)) return;
+    const key = String(clampId(idNum));
+    const normalized = normalizeReaderInteractionEntry(entry);
+    if(normalized.mode === READER_MODE_24H_LOOKUP_ONLY){
+      out[key] = normalized;
+    }
+  });
+  return out;
+}
+function loadReaderInteractionMap(){
+  const raw = readReaderInteractionMap();
+  const normalized = normalizeReaderInteractionMap(raw);
+  writeReaderInteractionMap(normalized);
+  return normalized;
+}
+function saveReaderInteractionMap(map){
+  writeReaderInteractionMap(normalizeReaderInteractionMap(map));
+}
+function getReaderInteractionForSlot(slotId){
+  const key = String(clampId(slotId));
+  const entry = readerInteractionMap?.[key];
+  return normalizeReaderInteractionEntry(entry);
+}
+function setReaderInteractionForSlot(slotId, entry){
+  const key = String(clampId(slotId));
+  const normalized = normalizeReaderInteractionEntry(entry);
+  const next = { ...(readerInteractionMap || {}) };
+  if(normalized.mode === READER_MODE_24H_LOOKUP_ONLY){
+    next[key] = normalized;
+  }else{
+    delete next[key];
+  }
+  saveReaderInteractionMap(next);
+  readerInteractionMap = loadReaderInteractionMap();
+}
+function clearReaderInteractionForSlot(slotId){
+  setReaderInteractionForSlot(slotId, null);
+}
+function resetAllReaderInteractionInMap(){
+  readerInteractionMap = {};
+  saveReaderInteractionMap(readerInteractionMap);
+  setActiveReaderInteraction(null);
+}
+function makeReaderInteractionRuntime(entry){
+  const normalized = normalizeReaderInteractionEntry(entry);
+  const words = normalized.mode === READER_MODE_24H_LOOKUP_ONLY ? normalized.exemptWords.slice() : [];
+  return {
+    mode: normalized.mode,
+    contentHash: normalized.contentHash || '',
+    exemptWords: words,
+    exemptWordSet: new Set(words),
+    exemptPatterns: words.map((word)=> buildVariantPattern(word)).filter(Boolean),
+  };
+}
+function setActiveReaderInteraction(entry){
+  activeReaderInteraction = makeReaderInteractionRuntime(entry);
+}
+function applyReaderInteractionFromActiveSlotContent(slotId = activeSlotId){
+  const entry = getReaderInteractionForSlot(slotId);
+  if(entry.mode !== READER_MODE_24H_LOOKUP_ONLY){
+    setActiveReaderInteraction(null);
+    return;
+  }
+  const src = document.getElementById('src');
+  const currentHash = hashContent(src?.value || '');
+  if(entry.contentHash && currentHash && entry.contentHash === currentHash){
+    setActiveReaderInteraction(entry);
+    return;
+  }
+  setActiveReaderInteraction(null);
+}
+function syncReaderInteractionForSavedContent(content){
+  const entry = getReaderInteractionForSlot(activeSlotId);
+  if(entry.mode !== READER_MODE_24H_LOOKUP_ONLY){
+    setActiveReaderInteraction(null);
+    return;
+  }
+  const currentHash = hashContent(content || '');
+  if(entry.contentHash === currentHash){
+    setActiveReaderInteraction(entry);
+    return;
+  }
+  clearReaderInteractionForSlot(activeSlotId);
+  setActiveReaderInteraction(null);
+}
+function buildReaderExemptWords(words, lang = getLang()){
+  if(!Array.isArray(words)) return [];
+  const out = [];
+  const seen = new Set();
+  words.forEach((raw)=>{
+    const key = normalizeLexemeKey(String(raw || '').trim(), lang);
+    const normalized = toLowerAlpha(key);
+    if(!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(normalized);
+  });
+  return out.slice(0, MAX_READER_EXEMPT_WORDS);
+}
+function enable24hLookupOnlyForCurrentContent(words, text){
+  const exemptWords = buildReaderExemptWords(words, getLang());
+  if(!exemptWords.length){
+    clearReaderInteractionForSlot(activeSlotId);
+    setActiveReaderInteraction(null);
+    return;
+  }
+  const contentHash = hashContent(text || document.getElementById('src')?.value || '');
+  const entry = {
+    mode: READER_MODE_24H_LOOKUP_ONLY,
+    contentHash,
+    exemptWords,
+  };
+  setReaderInteractionForSlot(activeSlotId, entry);
+  setActiveReaderInteraction(entry);
+}
+function isReaderSrsExemptWord(wordKey){
+  if(getWordSelectionMode() !== WORD_MODE_SRS) return false;
+  if(activeReaderInteraction.mode !== READER_MODE_24H_LOOKUP_ONLY) return false;
+  const key = toLowerAlpha(wordKey);
+  if(!key) return false;
+  if(activeReaderInteraction.exemptWordSet.has(key)) return true;
+  return activeReaderInteraction.exemptPatterns.some((re)=> re.test(key));
+}
+
 function clearWordNodeMap(){
   wordNodeMap.clear();
 }
@@ -1805,6 +1990,7 @@ async function pullRemoteState(id = remoteId){
   const hasPayload = Array.isArray(data.slots)
     || typeof data.activeSlotId !== 'undefined'
     || (data.bookmarks && typeof data.bookmarks === 'object')
+    || (data.readerInteraction && typeof data.readerInteraction === 'object')
     || Array.isArray(data.words)
     || typeof data.lang === 'string'
     || typeof data.level === 'string'
@@ -1865,6 +2051,10 @@ async function pullRemoteState(id = remoteId){
     saveBookmarksMap(data.bookmarks);
     bookmarksMap = loadBookmarksMap();
   }
+  if(data.readerInteraction && typeof data.readerInteraction === 'object'){
+    saveReaderInteractionMap(data.readerInteraction);
+    readerInteractionMap = loadReaderInteractionMap();
+  }
   if(typeof data.activeSlotId !== 'undefined'){
     activeSlotId = clampId(data.activeSlotId);
     saveActiveSlotId(activeSlotId);
@@ -1889,6 +2079,7 @@ async function pushRemoteState(id = remoteId){
     slots,
     activeSlotId,
     bookmarks: bookmarksMap,
+    readerInteraction: readerInteractionMap,
     words: loadWords(),
     lang: llmPref.lang,
     level: llmPref.level,
@@ -3498,6 +3689,7 @@ async function processSingleClick(el){
   const word = toLowerAlpha(el.dataset.k || normalizeLexemeKey(display, lang));
   if(!word) return;
   const mode = getWordSelectionMode();
+  const skipSrs = isReaderSrsExemptWord(word);
   const shouldCount = mode === WORD_MODE_COUNT;
   const nodes = getWordNodes(word);
   const anyDeducted = deductedWords.has(word) || nodes.some(node => node.classList.contains('deducted'));
@@ -3511,7 +3703,7 @@ async function processSingleClick(el){
       display: lang === 'de' ? word : display,
       aliases: [display]
     }, shouldCount);
-    if(mode === WORD_MODE_SRS){
+    if(mode === WORD_MODE_SRS && !skipSrs){
       applySrsReview(word, 'again');
       setWordDeductedVisual(word, true);
     }
@@ -3525,7 +3717,7 @@ async function processSingleClick(el){
     aliases: [display],
     lastLookupAt: lookupAt
   }, shouldCount);
-  if(mode === WORD_MODE_SRS){
+  if(mode === WORD_MODE_SRS && !skipSrs){
     applySrsReview(word, 'again');
     setWordDeductedVisual(word, true);
   }
@@ -3590,12 +3782,15 @@ function processDoubleClick(el){
   const word = toLowerAlpha(el.dataset.k || normalizeLexemeKey(display, lang));
   if(!word) return;
   if(getWordSelectionMode() === WORD_MODE_SRS){
+    const skipSrs = isReaderSrsExemptWord(word);
     upsertWord(word, {
       display: lang === 'de' ? word : display,
       aliases: [display]
     }, false);
-    applySrsReview(word, 'good');
-    setWordDeductedVisual(word, false);
+    if(!skipSrs){
+      applySrsReview(word, 'good');
+      setWordDeductedVisual(word, false);
+    }
   }else{
     adjustWordCount(word, -1);
     setWordDeductedVisual(word, true);
@@ -4756,7 +4951,8 @@ function bindStoryUI(){
     wordsProvider = () => [],
     allowRandomWhenEmpty = false,
     emptyAlert = '目前沒有符合條件的單字。',
-    successAlertBuilder
+    successAlertBuilder,
+    readerInteractionMode = READER_MODE_NORMAL
   } = {}){
     const idleText = triggerBtn?.textContent || '生成內容';
     try{
@@ -4792,6 +4988,9 @@ function bindStoryUI(){
         if(allowRandomWhenEmpty){
           const text = await generateContentWithOpenAI({ lang, type, words: [], level, customTopic, targetCount });
           $('#src').value = text; compile(); saveActiveSlot();
+          clearReaderInteractionForSlot(activeSlotId);
+          setActiveReaderInteraction(null);
+          scheduleRemotePush();
           alert(emptyAlert);
         }else{
           alert(emptyAlert);
@@ -4807,6 +5006,16 @@ function bindStoryUI(){
         if(missing.length){ alert('注意：仍未成功納入：\n' + missing.join(', ')); }
       }
       $('#src').value = text; compile(); saveActiveSlot();
+      if(readerInteractionMode === READER_MODE_24H_LOOKUP_ONLY){
+        enable24hLookupOnlyForCurrentContent(words, text);
+        if(activeReaderInteraction.mode === READER_MODE_24H_LOOKUP_ONLY){
+          setStatus(`24h 模式：${activeReaderInteraction.exemptWords.length} 字可查字典但不計 SRS`);
+        }
+      }else{
+        clearReaderInteractionForSlot(activeSlotId);
+        setActiveReaderInteraction(null);
+      }
+      scheduleRemotePush();
       if(typeof successAlertBuilder === 'function'){
         alert(successAlertBuilder({ words, mode, type, targetWordCount }));
       }else{
@@ -4832,6 +5041,7 @@ function bindStoryUI(){
       wordsProvider: ({ targetWordCount }) => getGenerationWords(targetWordCount),
       allowRandomWhenEmpty: true,
       emptyAlert: '已生成隨機內容（目前生字本沒有單字）。',
+      readerInteractionMode: READER_MODE_NORMAL,
       successAlertBuilder: ({ mode, type, targetWordCount })=>{
         const modeText = mode === WORD_MODE_SRS ? 'SRS 到期' : '高頻';
         return type === 'custom'
@@ -4847,9 +5057,10 @@ function bindStoryUI(){
       busyText: '24h 生成中…',
       wordsProvider: () => getWordsSeenLast24h(),
       allowRandomWhenEmpty: false,
+      readerInteractionMode: READER_MODE_24H_LOOKUP_ONLY,
       emptyAlert: '目前沒有 24 小時內學習過的單字。',
       successAlertBuilder: ({ words })=>
-        `已依 24 小時內學習過的 ${words.length} 個單字生成內容（允許詞形變化/派生）。`
+        `已依 24 小時內學習過的 ${words.length} 個單字生成內容（可查字典，但這些目標字點擊不計 SRS）。`
     });
   });
 }
@@ -4862,7 +5073,14 @@ function bindReaderDelegates(){
   reader.addEventListener('dblclick', handleReaderDblClick);
 }
 function bindGeneralUI(){
-  $('#compile')?.addEventListener('click', ()=>{ compile(); applyScrollProgress(reader, 0); saveActiveSlot(); });
+  $('#compile')?.addEventListener('click', ()=>{
+    compile();
+    applyScrollProgress(reader, 0);
+    saveActiveSlot();
+    clearReaderInteractionForSlot(activeSlotId);
+    setActiveReaderInteraction(null);
+    scheduleRemotePush();
+  });
   $('#sample')?.addEventListener('click', ()=>{
     $('#src').value = `A: Hey, do you want to grab coffee after class?
 B: Sure! I was thinking about that new place near the library.
@@ -4873,7 +5091,13 @@ B: Deal! See you at five.
 
 In the heart of the city, curiosity sparks when we notice subtle patterns in everyday life.
 Language evolves; words adapt, meanings shift, and our interpretations blossom.`;
-    compile(); applyScrollProgress(reader, 0); saveActiveSlot(); setStatus('已貼上範例，已儲存到書格');
+    compile();
+    applyScrollProgress(reader, 0);
+    saveActiveSlot();
+    clearReaderInteractionForSlot(activeSlotId);
+    setActiveReaderInteraction(null);
+    scheduleRemotePush();
+    setStatus('已貼上範例，已儲存到書格');
   });
   $('#clearAll')?.addEventListener('click', ()=>{
     $('#src').value=''; compiledSegments = []; useVirtualScroll = false; deductedWords.clear(); clearWordNodeMap(); segmentHeights.length = 0;
@@ -4882,7 +5106,12 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
     setActiveCardWordContext('');
     clearSegAudioCache();
     ttsDrawer.classList.remove('show');
-    updateProgressUI(0); saveActiveSlot(); renderBookmarkList();
+    updateProgressUI(0);
+    saveActiveSlot();
+    clearReaderInteractionForSlot(activeSlotId);
+    setActiveReaderInteraction(null);
+    scheduleRemotePush();
+    renderBookmarkList();
   });
   $('#cardClose')?.addEventListener('click', ()=>{
     card.style.display='none';
