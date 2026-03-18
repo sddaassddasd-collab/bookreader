@@ -4439,6 +4439,11 @@ function buildVariantPattern(w){
 async function wordsMissingFrom(text, words){
   const t = text || '';
   if(getLang() === 'de'){
+    const surfaceSet = new Set(
+      tokenizeTextToWordTokens(t, 'de')
+        .map(tok => toLowerAlpha(tok.surface || ''))
+        .filter(Boolean)
+    );
     let lexemeSet = null;
     try{
       const tokens = await analyzeGermanMorphology(t);
@@ -4451,11 +4456,21 @@ async function wordsMissingFrom(text, words){
     if(!lexemeSet){
       lexemeSet = analyzeGermanLexemeSetFromText(t);
     }
-    return words
-      .map(w => normalizeLexemeKey(w, 'de'))
-      .filter(Boolean)
-      .filter((w, idx, arr) => arr.indexOf(w) === idx)
-      .filter(w => !lexemeSet.has(w));
+    const missing = [];
+    const seen = new Set();
+    for(const rawWord of words){
+      const raw = String(rawWord || '').trim();
+      if(!raw) continue;
+      const surface = toLowerAlpha(raw);
+      const lemma = normalizeLexemeKey(raw, 'de');
+      const dedupeKey = `${surface}__${lemma}`;
+      if(seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      if(surfaceSet.has(surface)) continue; // exact surface-form hit
+      if(lemma && lexemeSet.has(lemma)) continue; // lemma hit
+      missing.push(raw);
+    }
+    return missing;
   }
   const missing = [];
   for(const w of words){
