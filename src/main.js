@@ -225,6 +225,8 @@ const segmentHeights = [];
 let hfState = { top15: new Set(), top50: new Set() };
 let hfRecalcTimer = null;
 const HF_RECALC_MS = 650;
+const SRS_TARGET_CLASS = 'srs-target';
+let srsGenerationHighlight = createEmptySrsGenerationHighlightState();
 
 function captureLLMAndLangPrefs(){
   return {
@@ -836,6 +838,100 @@ function countWords(str){ const matches = (str || '').trim().match(/\S+/g); retu
 function formatTime(iso){ try{ const d=new Date(iso); return d.toLocaleString('zh-TW',{hour12:false}); }catch{ return ''; } }
 function clampId(id){ const num = Number.isFinite(id)?id:1; return Math.min(Math.max(Math.floor(num),1),MAX_SLOTS); }
 function getLang(){ const el = document.getElementById('langSelect'); return el ? el.value : 'en'; }
+function createEmptySrsGenerationHighlightState(){
+  return {
+    enabled: false,
+    lang: 'en',
+    contentHash: '',
+    words: [],
+    surfaceSet: new Set(),
+    lexemeSet: new Set(),
+    patterns: []
+  };
+}
+function normalizeSrsGenerationHighlightWords(words){
+  if(!Array.isArray(words)) return [];
+  const out = [];
+  const seen = new Set();
+  words.forEach((raw)=>{
+    const word = String(raw || '').trim();
+    if(!word) return;
+    const key = toLowerAlpha(word);
+    if(seen.has(key)) return;
+    seen.add(key);
+    out.push(word);
+  });
+  return out;
+}
+function buildSrsGenerationHighlightState(words, text, lang = getLang()){
+  const normalizedWords = normalizeSrsGenerationHighlightWords(words);
+  if(!normalizedWords.length) return createEmptySrsGenerationHighlightState();
+  const surfaceSet = new Set();
+  const lexemeSet = new Set();
+  const patterns = [];
+  normalizedWords.forEach((word)=>{
+    const surface = toLowerAlpha(word);
+    if(surface) surfaceSet.add(surface);
+    const lexeme = normalizeLexemeKey(word, lang);
+    if(lexeme) lexemeSet.add(toLowerAlpha(lexeme));
+    if(lang !== 'de'){
+      const pattern = buildVariantPattern(word, lang);
+      if(pattern) patterns.push(pattern);
+    }
+  });
+  return {
+    enabled: true,
+    lang,
+    contentHash: hashContent(text || ''),
+    words: normalizedWords,
+    surfaceSet,
+    lexemeSet,
+    patterns
+  };
+}
+function isNodeMatchedBySrsGenerationHighlight(node, key){
+  if(!node || !srsGenerationHighlight.enabled) return false;
+  if(srsGenerationHighlight.lang !== getLang()) return false;
+  const surface = toLowerAlpha(node.dataset?.w || node.textContent || '');
+  const lexeme = toLowerAlpha(key || node.dataset?.k || surface);
+  if(surface && srsGenerationHighlight.surfaceSet.has(surface)) return true;
+  if(lexeme && srsGenerationHighlight.lexemeSet.has(lexeme)) return true;
+  if(srsGenerationHighlight.lang !== 'de' && surface){
+    return srsGenerationHighlight.patterns.some((re)=> re.test(surface));
+  }
+  return false;
+}
+function applySrsGenerationHighlightToNode(node, key){
+  if(!node) return;
+  if(isNodeMatchedBySrsGenerationHighlight(node, key)){
+    node.classList.add(SRS_TARGET_CLASS);
+  }else{
+    node.classList.remove(SRS_TARGET_CLASS);
+  }
+}
+function refreshSrsGenerationHighlights(){
+  if(!reader) return;
+  reader.querySelectorAll('.word').forEach((node)=>{
+    const key = toLowerAlpha(node.dataset?.k || node.dataset?.w);
+    applySrsGenerationHighlightToNode(node, key);
+  });
+}
+function setSrsGenerationHighlightForContent(words, text, lang = getLang()){
+  srsGenerationHighlight = buildSrsGenerationHighlightState(words, text, lang);
+  refreshSrsGenerationHighlights();
+}
+function clearSrsGenerationHighlight(){
+  const hadHighlight = srsGenerationHighlight.enabled;
+  srsGenerationHighlight = createEmptySrsGenerationHighlightState();
+  if(hadHighlight) refreshSrsGenerationHighlights();
+}
+function syncSrsGenerationHighlightForText(text, lang = getLang()){
+  if(!srsGenerationHighlight.enabled) return;
+  const contentHash = hashContent(text || '');
+  if(srsGenerationHighlight.lang !== lang || srsGenerationHighlight.contentHash !== contentHash){
+    clearSrsGenerationHighlight();
+  }
+}
 function _curStoreKey(){ return STORE_KEYS[getLang()] || STORE_KEYS.en; }
 function _curQueueKey(){ return QUEUE_KEYS[getLang()] || QUEUE_KEYS.en; }
 function escapeHtml(s){
@@ -1915,6 +2011,7 @@ function registerWordNode(node){
   bucket.add(node);
   if(deductedWords.has(key)) node.classList.add('deducted');
   applyHFClassToNode(node, key);
+  applySrsGenerationHighlightToNode(node, key);
 }
 function unregisterWordNode(node){
   if(!node || !node.dataset) return;
@@ -3362,6 +3459,7 @@ function compile(){
   const langSelect = document.querySelector('#langSelect');
   const raw = (srcEl && srcEl.value) ? srcEl.value : '';
   const lang = (langSelect && langSelect.value) ? langSelect.value : 'en';
+  syncSrsGenerationHighlightForText(raw, lang);
 
   const lines = raw.split(/\r?\n/);
   const segments = [];
@@ -4400,8 +4498,8 @@ function getWordsSeenLast24h(){
     .filter(Boolean);
 }
 
-function buildVariantPattern(w){
-  const lang = getLang();
+function buildVariantPattern(w, langOverride = getLang()){
+  const lang = langOverride;
   const root = (w || '').trim();
   if(!root) return null;
   if(lang === 'de'){
@@ -5003,6 +5101,7 @@ function bindStoryUI(){
         if(allowRandomWhenEmpty){
           const text = await generateContentWithOpenAI({ lang, type, words: [], level, customTopic, targetCount });
           $('#src').value = text; compile(); saveActiveSlot();
+          clearSrsGenerationHighlight();
           clearReaderInteractionForSlot(activeSlotId);
           setActiveReaderInteraction(null);
           scheduleRemotePush();
@@ -5021,6 +5120,11 @@ function bindStoryUI(){
         if(missing.length){ alert('注意：仍未成功納入：\n' + missing.join(', ')); }
       }
       $('#src').value = text; compile(); saveActiveSlot();
+      if(mode === WORD_MODE_SRS && readerInteractionMode === READER_MODE_NORMAL){
+        setSrsGenerationHighlightForContent(words, text, lang);
+      }else{
+        clearSrsGenerationHighlight();
+      }
       if(readerInteractionMode === READER_MODE_24H_LOOKUP_ONLY){
         enable24hLookupOnlyForCurrentContent(words, text);
         if(activeReaderInteraction.mode === READER_MODE_24H_LOOKUP_ONLY){
@@ -5116,6 +5220,7 @@ Language evolves; words adapt, meanings shift, and our interpretations blossom.`
   });
   $('#clearAll')?.addEventListener('click', ()=>{
     $('#src').value=''; compiledSegments = []; useVirtualScroll = false; deductedWords.clear(); clearWordNodeMap(); segmentHeights.length = 0;
+    clearSrsGenerationHighlight();
     teardownReader();
     reader.innerHTML='<div class="empty">已清空，請貼上新文章。</div>';
     setActiveCardWordContext('');
